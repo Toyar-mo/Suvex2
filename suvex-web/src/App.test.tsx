@@ -13,11 +13,12 @@ describe('Suvex 2 Editorial Studio Core', () => {
     vi.restoreAllMocks()
   })
 
-  it('registers all 19 workspace modules across 4 navigation groups', () => {
+  it('registers all 20 workspace modules across 4 navigation groups', () => {
     expect(NAV_GROUPS).toHaveLength(4)
-    expect(NAV_ITEMS).toHaveLength(19)
+    expect(NAV_ITEMS).toHaveLength(20)
     const paths = new Set(NAV_ITEMS.map((n) => n.path))
-    expect(paths.size).toBe(19)
+    expect(paths.size).toBe(20)
+    expect(paths.has('/missions')).toBe(true)
     expect(paths.has('/assets')).toBe(true)
     expect(paths.has('/schedules')).toBe(true)
     expect(paths.has('/ir')).toBe(true)

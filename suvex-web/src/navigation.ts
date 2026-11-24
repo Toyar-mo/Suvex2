@@ -8,6 +8,7 @@ import {
   FileText,
   Flag,
   FolderOpen,
+  GitBranch,
   KeyRound,
   Layers,
   MessagesSquare,
@@ -69,6 +70,15 @@ export const NAV_ITEMS: NavItem[] = [
     shortLabel: '扫描',
     icon: ScanSearch,
     blurb: '发起授权渗透评估、CTF 夺旗或修复复测，追踪全生命周期。',
+  },
+  {
+    id: 'missions',
+    path: '/missions',
+    group: 'run',
+    label: '作战编排图',
+    shortLabel: '作战',
+    icon: GitBranch,
+    blurb: '多智能体协同作战图：目标分解、行动意图调度与子智能体并行执行验收。',
   },
   {
     id: 'activity',

@@ -2,7 +2,9 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import {
   Activity,
+  Archive,
   FileText,
+  GitCompare,
   Paperclip,
   Play,
   Plus,
@@ -29,6 +31,7 @@ import {
   TARGET_KINDS,
 } from '@/lib/format'
 import type {
+  CompareOut,
   HintOut,
   ProviderOut,
   ScanGoal,
@@ -47,6 +50,7 @@ import {
   Drawer,
   EmptyState,
   Input,
+  Modal,
   PageHeader,
   Skeleton,
   Textarea,
@@ -64,6 +68,14 @@ export function ScansPage() {
   const [loading, setLoading] = useState(true)
   const [statusFilter, setStatusFilter] = useState<string>('')
   const [query, setQuery] = useState('')
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+
+  // Compare Modal
+  const [compareOpen, setCompareOpen] = useState(false)
+  const [compareA, setCompareA] = useState('')
+  const [compareB, setCompareB] = useState('')
+  const [compareResult, setCompareResult] = useState<CompareOut | null>(null)
+  const [comparing, setComparing] = useState(false)
 
   const [wizardOpen, setWizardOpen] = useState(searchParams.get('new') === '1')
   const [selectedScan, setSelectedScan] = useState<ScanOut | null>(null)
@@ -131,6 +143,80 @@ export function ScansPage() {
     setHints([])
     api.getScanHints(scan.id).then(setHints).catch(() => {})
   }, [])
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    )
+  }
+
+  const runCompare = async (aId = compareA, bId = compareB) => {
+    if (!aId || !bId || aId === bId) {
+      push('请选择两次不同的扫描进行差异对比', 'error')
+      return
+    }
+    setComparing(true)
+    try {
+      const res = await api.compareScans(aId, bId)
+      setCompareResult(res)
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '对比扫描失败', 'error')
+    } finally {
+      setComparing(false)
+    }
+  }
+
+  const handleOpenCompareFromSelection = () => {
+    const a = selectedIds[1] || scans[1]?.id || ''
+    const b = selectedIds[0] || scans[0]?.id || ''
+    setCompareA(a)
+    setCompareB(b)
+    setCompareResult(null)
+    setCompareOpen(true)
+    if (a && b && a !== b) {
+      void runCompare(a, b)
+    }
+  }
+
+  const handleBatchArchive = async () => {
+    if (selectedIds.length === 0) return
+    try {
+      const res = await api.archiveScansBatch(selectedIds, true)
+      push(`已归档 ${res.changed} 条扫描`, 'success')
+      setSelectedIds([])
+      await loadScans()
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '批量归档失败', 'error')
+    }
+  }
+
+  const handleBatchDelete = async () => {
+    if (selectedIds.length === 0) return
+    try {
+      const res = await api.deleteScans(selectedIds)
+      push(`已移入回收站 ${res.changed} 条扫描`, 'default')
+      setSelectedIds([])
+      await loadScans()
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '批量删除失败', 'error')
+    }
+  }
+
+  const handleBatchRerun = async () => {
+    if (selectedIds.length === 0) return
+    try {
+      const res = await api.rerunScansBatch(selectedIds, {
+        confirmed: true,
+        statement: SCAN_AUTH_STATEMENT,
+        confirmedAt: new Date().toISOString(),
+      })
+      push(`已批量重跑 ${res.created.length} 条扫描`, 'success')
+      setSelectedIds([])
+      await loadScans()
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '批量重跑失败', 'error')
+    }
+  }
 
   const handleKindChange = (kind: TargetKind) => {
     setTargetKind(kind)
@@ -267,12 +353,21 @@ export function ScansPage() {
       <PageHeader
         eyebrow="Scan Ledger"
         title="扫描任务"
-        description="对目标发起授权安全评估、CTF 夺旗或修复复测，全程追踪智能体执行与产物交付。"
+        description="对目标发起授权安全评估、CTF 夺旗或修复复测，支持双扫描差异对比与批量操作。"
         actions={
           <>
             <Button variant="secondary" size="sm" onClick={() => void loadScans()}>
               <RefreshCw className="h-3.5 w-3.5" />
               刷新
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={scans.length < 2}
+              onClick={handleOpenCompareFromSelection}
+            >
+              <GitCompare className="h-3.5 w-3.5" />
+              双扫描对比
             </Button>
             <Button variant="primary" size="sm" onClick={() => setWizardOpen(true)}>
               <Plus className="h-3.5 w-3.5" />
@@ -281,6 +376,36 @@ export function ScansPage() {
           </>
         }
       />
+
+      {/* Bulk Action Bar */}
+      {selectedIds.length > 0 && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-editorial border border-accent/30 bg-accent-soft/50 px-4 py-2.5 text-xs">
+          <span className="font-medium text-ink">已选择 {selectedIds.length} 条扫描任务</span>
+          <div className="flex flex-wrap items-center gap-2">
+            {selectedIds.length === 2 && (
+              <Button size="sm" variant="accent" onClick={handleOpenCompareFromSelection}>
+                <GitCompare className="h-3.5 w-3.5" />
+                对比这两次扫描
+              </Button>
+            )}
+            <Button size="sm" variant="secondary" onClick={() => void handleBatchRerun()}>
+              <RotateCcw className="h-3.5 w-3.5" />
+              批量重跑
+            </Button>
+            <Button size="sm" variant="secondary" onClick={() => void handleBatchArchive()}>
+              <Archive className="h-3.5 w-3.5" />
+              批量归档
+            </Button>
+            <Button size="sm" variant="danger" onClick={() => void handleBatchDelete()}>
+              <Trash2 className="h-3.5 w-3.5" />
+              移入回收站
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setSelectedIds([])}>
+              取消选择
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Queue Bar + Filters */}
       <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -352,6 +477,7 @@ export function ScansPage() {
           <div className="divide-y divide-line">
             {scans.map((scan) => {
               const st = SCAN_STATUS_META[scan.status] || SCAN_STATUS_META.queued
+              const checked = selectedIds.includes(scan.id)
               const sevEntries = (['critical', 'high', 'medium', 'low'] as Severity[])
                 .map((s) => ({ sev: s, count: scan.findings?.[s] || 0 }))
                 .filter((x) => x.count > 0)
@@ -362,27 +488,37 @@ export function ScansPage() {
                   onClick={() => void openDetail(scan)}
                   className="flex cursor-pointer flex-col gap-3 px-5 py-4 transition-colors hover:bg-subtle/60 sm:flex-row sm:items-center sm:justify-between"
                 >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="truncate text-sm font-semibold text-ink">
-                        {scan.name || scan.target || scan.id}
-                      </span>
-                      <Badge pulse={st.pulse} className={st.badge}>
-                        {st.label}
-                      </Badge>
-                      <Badge className="font-mono text-[10px]">
-                        {GOAL_META[scan.goal]?.label || scan.goal}
-                      </Badge>
-                      {scan.flag && (
-                        <Badge className="border-emerald-200 bg-emerald-50 font-mono text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300">
-                          FLAG 已捕获
+                  <div className="flex min-w-0 flex-1 items-start gap-3">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={() => toggleSelect(scan.id)}
+                      className="mt-1 rounded border-line-strong"
+                      aria-label={`选择扫描 ${scan.name || scan.id}`}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="truncate text-sm font-semibold text-ink">
+                          {scan.name || scan.target || scan.id}
+                        </span>
+                        <Badge pulse={st.pulse} className={st.badge}>
+                          {st.label}
                         </Badge>
-                      )}
+                        <Badge className="font-mono text-[10px]">
+                          {GOAL_META[scan.goal]?.label || scan.goal}
+                        </Badge>
+                        {scan.flag && (
+                          <Badge className="border-emerald-200 bg-emerald-50 font-mono text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300">
+                            FLAG 已捕获
+                          </Badge>
+                        )}
+                      </div>
+                      <p className="mt-1 truncate font-mono text-xs text-ink-muted">
+                        {scan.target || '纯附件任务'} · {scan.targetKind} ·{' '}
+                        {formatRelativeTime(scan.startedAt)}
+                      </p>
                     </div>
-                    <p className="mt-1 truncate font-mono text-xs text-ink-muted">
-                      {scan.target || '纯附件任务'} · {scan.targetKind} ·{' '}
-                      {formatRelativeTime(scan.startedAt)}
-                    </p>
                   </div>
 
                   <div className="flex shrink-0 items-center gap-3">
@@ -410,6 +546,101 @@ export function ScansPage() {
         )}
       </Card>
 
+      {/* Scan Diff Compare Modal */}
+      <Modal
+        open={compareOpen}
+        onClose={() => setCompareOpen(false)}
+        title="双扫描差异对比"
+        subtitle="对比基线扫描（A）与较新扫描（B），识别已修复、新引入与持续存在的漏洞"
+        maxWidth="max-w-2xl"
+      >
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-ink-secondary">基线扫描 A（较早）</label>
+              <select
+                value={compareA}
+                onChange={(e) => setCompareA(e.target.value)}
+                className="h-9 w-full rounded-lg border border-line bg-surface px-2.5 text-xs text-ink"
+              >
+                {scans.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name || s.target || s.id}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-ink-secondary">最新扫描 B（较新）</label>
+              <select
+                value={compareB}
+                onChange={(e) => setCompareB(e.target.value)}
+                className="h-9 w-full rounded-lg border border-line bg-surface px-2.5 text-xs text-ink"
+              >
+                {scans.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name || s.target || s.id}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <Button size="sm" variant="primary" loading={comparing} onClick={() => void runCompare()}>
+            <GitCompare className="h-3.5 w-3.5" />
+            计算差异
+          </Button>
+
+          {compareResult && (
+            <div className="space-y-3 border-t border-line pt-4">
+              <div className="rounded-lg border border-line bg-subtle p-3 text-xs">
+                <span className="font-semibold text-ink">变化研判：</span>
+                <span className="text-ink-secondary">{compareResult.verdict}</span>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-3 text-xs">
+                <Card className="p-3.5">
+                  <p className="font-semibold text-emerald-700 dark:text-emerald-400">
+                    已收敛 / 仅 A 存在 ({compareResult.onlyInA.length})
+                  </p>
+                  <ul className="mt-2 space-y-1 text-ink-secondary">
+                    {compareResult.onlyInA.length === 0 ? (
+                      <li className="text-ink-muted">无</li>
+                    ) : (
+                      compareResult.onlyInA.map((x, i) => <li key={i}>• {x}</li>)
+                    )}
+                  </ul>
+                </Card>
+                <Card className="p-3.5">
+                  <p className="font-semibold text-red-700 dark:text-red-400">
+                    新引入 / 仅 B 存在 ({compareResult.onlyInB.length})
+                  </p>
+                  <ul className="mt-2 space-y-1 text-ink-secondary">
+                    {compareResult.onlyInB.length === 0 ? (
+                      <li className="text-ink-muted">无</li>
+                    ) : (
+                      compareResult.onlyInB.map((x, i) => <li key={i}>• {x}</li>)
+                    )}
+                  </ul>
+                </Card>
+                <Card className="p-3.5">
+                  <p className="font-semibold text-ink">
+                    持续存在 ({compareResult.common.length})
+                  </p>
+                  <ul className="mt-2 space-y-1 text-ink-secondary">
+                    {compareResult.common.length === 0 ? (
+                      <li className="text-ink-muted">无</li>
+                    ) : (
+                      compareResult.common.map((x, i) => <li key={i}>• {x}</li>)
+                    )}
+                  </ul>
+                </Card>
+              </div>
+            </div>
+          )}
+        </div>
+      </Modal>
+
       {/* New Scan Wizard Drawer */}
       <Drawer
         open={wizardOpen}
@@ -422,7 +653,6 @@ export function ScansPage() {
         widthClass="max-w-2xl"
       >
         <form onSubmit={handleCreateScan} className="space-y-6">
-          {/* Target Kind */}
           <div>
             <label className="mb-2 block text-xs font-semibold text-ink">1. 目标形态</label>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
@@ -445,7 +675,6 @@ export function ScansPage() {
             </div>
           </div>
 
-          {/* Target & Name */}
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <label className="mb-1.5 block text-xs font-medium text-ink-secondary">
@@ -470,7 +699,6 @@ export function ScansPage() {
             </div>
           </div>
 
-          {/* Goal */}
           <div>
             <label className="mb-2 block text-xs font-semibold text-ink">2. 成功判据</label>
             <div className="grid gap-2 sm:grid-cols-3">
@@ -493,7 +721,6 @@ export function ScansPage() {
             </div>
           </div>
 
-          {/* Skills & Provider */}
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <label className="mb-2 block text-xs font-semibold text-ink">3. 检测技能</label>
@@ -536,7 +763,6 @@ export function ScansPage() {
             </div>
           </div>
 
-          {/* Brief & Attachments */}
           <div>
             <label className="mb-1.5 block text-xs font-semibold text-ink">
               4. 任务背景 / 题面 / 账号范围（可选）
@@ -566,7 +792,6 @@ export function ScansPage() {
             </div>
           </div>
 
-          {/* Verbatim Authorization */}
           <div className="rounded-editorial border border-line-strong bg-subtle p-4">
             <label className="flex cursor-pointer items-start gap-2.5">
               <input
@@ -627,7 +852,7 @@ export function ScansPage() {
                     实时事件流
                   </Button>
                 </Link>
-                {(selectedScan.status === 'running' || selectedScan.status === 'queued') ? (
+                {selectedScan.status === 'running' || selectedScan.status === 'queued' ? (
                   <Button size="sm" variant="danger" onClick={() => void handleAbort(selectedScan)}>
                     <Square className="h-3 w-3" />
                     终止
@@ -657,7 +882,6 @@ export function ScansPage() {
               </div>
             )}
 
-            {/* Metadata Card */}
             <Card className="grid grid-cols-2 gap-4 p-4 text-xs">
               <div>
                 <p className="text-ink-muted">目标地址</p>
@@ -692,7 +916,6 @@ export function ScansPage() {
               </div>
             )}
 
-            {/* Live Hint Injection */}
             <div>
               <h3 className="mb-2 text-xs font-semibold text-ink">人工线索注入</h3>
               <div className="flex gap-2">
@@ -729,7 +952,6 @@ export function ScansPage() {
               )}
             </div>
 
-            {/* Writeup / Report Preview */}
             <div>
               <div className="mb-2 flex items-center justify-between">
                 <h3 className="text-xs font-semibold text-ink">报告 / 题解产物</h3>

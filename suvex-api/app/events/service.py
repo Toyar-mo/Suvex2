@@ -12,14 +12,31 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import event as sa_event, func, select
 from sqlalchemy.orm import Session
 
 from app.core.errors import ApiError
 from app.core.ids import new_id
 from app.core.timeutil import now_utc
 from app.core.vocab import ActivityEventType, AgentPhase
+from app.events.bus import activity_bus
 from app.events.models import ActivityEvent, Agent
+
+_PENDING_BUS_SCANS_KEY = "_suvex2_pending_activity_scans"
+
+
+@sa_event.listens_for(Session, "after_commit")
+def _notify_activity_bus_after_commit(session: Session) -> None:
+    scans = session.info.pop(_PENDING_BUS_SCANS_KEY, None)
+    if not scans:
+        return
+    for scan_id in scans:
+        activity_bus.publish(scan_id)
+
+
+@sa_event.listens_for(Session, "after_rollback")
+def _clear_activity_bus_on_rollback(session: Session) -> None:
+    session.info.pop(_PENDING_BUS_SCANS_KEY, None)
 
 
 def agents_for_scan(db: Session, scan_id: str) -> list[Agent]:
@@ -134,6 +151,8 @@ def append_event(
         at=at or now_utc(),
     )
     db.add(event)
+    pending: set[str] = db.info.setdefault(_PENDING_BUS_SCANS_KEY, set())
+    pending.add(scan_id)
     return event
 
 

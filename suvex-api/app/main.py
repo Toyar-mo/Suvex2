@@ -65,6 +65,7 @@ from app.scans.scope_router import router as scope_router
 from app.schedules.router import router as schedules_router
 from app.settings.router import router as settings_router
 from app.stage.router import router as stage_router
+from app.system.router import router as system_router
 
 logger = logging.getLogger("suvex")
 
@@ -532,6 +533,7 @@ def create_app() -> FastAPI:
         intranet_router,
         chat_router,
         ctf_race_router,
+        system_router,
     ):
         app.include_router(router, prefix=settings.api_prefix)
 

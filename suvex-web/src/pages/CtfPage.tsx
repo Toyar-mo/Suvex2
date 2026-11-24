@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
+  ArrowDownWideNarrow,
   CheckCircle2,
   DownloadCloud,
   FileText,
   Flag,
+  Flame,
   KeyRound,
   MessagesSquare,
   Play,
@@ -23,6 +25,7 @@ import type {
   KernelQueueOut,
   KernelUsageSummary,
   KernelWriteupOut,
+  RaceStatusOut,
 } from '@/types/api'
 import {
   Badge,
@@ -47,10 +50,19 @@ export function CtfPage() {
   const [challenges, setChallenges] = useState<KernelChallengeOut[]>([])
   const [queue, setQueue] = useState<KernelQueueOut | null>(null)
   const [usage, setUsage] = useState<KernelUsageSummary | null>(null)
+  const [raceStatus, setRaceStatus] = useState<RaceStatusOut | null>(null)
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
   const [categoryFilter, setCategoryFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+
+  // Race Modal
+  const [raceOpen, setRaceOpen] = useState(false)
+  const [raceConcurrent, setRaceConcurrent] = useState(2)
+  const [raceBudget, setRaceBudget] = useState('')
+  const [raceNoSubmit, setRaceNoSubmit] = useState(false)
+  const [startingRace, setStartingRace] = useState(false)
 
   // Modals
   const [bindOpen, setBindOpen] = useState(false)
@@ -69,16 +81,18 @@ export function CtfPage() {
 
   const loadAll = useCallback(async () => {
     try {
-      const [accs, comps, q, usg] = await Promise.all([
+      const [accs, comps, q, usg, race] = await Promise.all([
         api.getKernelAccounts().catch(() => []),
         api.getKernelCompetitions().catch(() => []),
         api.getKernelQueue().catch(() => null),
         api.getKernelUsage(selectedCompId || undefined).catch(() => null),
+        api.getRaceStatus().catch(() => null),
       ])
       setAccounts(accs)
       setCompetitions(comps)
       setQueue(q)
       setUsage(usg)
+      setRaceStatus(race)
 
       const compId = selectedCompId || comps[0]?.id || ''
       if (!selectedCompId && compId) setSelectedCompId(compId)
@@ -111,6 +125,66 @@ export function CtfPage() {
       return true
     })
   }, [challenges, categoryFilter, statusFilter])
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    )
+  }
+
+  const handleBatchAction = async (action: 'solve' | 'cancel') => {
+    if (selectedIds.length === 0) return
+    try {
+      const res = await api.batchCtfChallenges(action, selectedIds)
+      push(
+        `批量${action === 'solve' ? '开解' : '停止'}完成：成功 ${res.succeeded}，失败 ${res.failed}`,
+        'success',
+      )
+      setSelectedIds([])
+      await loadAll()
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '批量操作失败', 'error')
+    }
+  }
+
+  const handlePrioritizeByScore = async () => {
+    try {
+      const res = await api.prioritizeCtfByScore(selectedCompId || undefined, 10)
+      push(`已按高分优先重排 ${res.changed} 道题目的队列优先级`, 'success')
+      await loadAll()
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '按分值排队失败', 'error')
+    }
+  }
+
+  const handleStartRace = async (e: FormEvent) => {
+    e.preventDefault()
+    setStartingRace(true)
+    try {
+      const res = await api.startRace({
+        maxConcurrent: raceConcurrent,
+        maxBudgetUsd: raceBudget ? Number(raceBudget) : null,
+        noSubmit: raceNoSubmit,
+      })
+      setRaceStatus(res)
+      setRaceOpen(false)
+      push('多模型赛跑自动托管已启动', 'success')
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '启动多模型赛跑失败', 'error')
+    } finally {
+      setStartingRace(false)
+    }
+  }
+
+  const handleStopRace = async () => {
+    try {
+      const res = await api.stopRace()
+      setRaceStatus(res)
+      push('已请求停止多模型赛跑', 'default')
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '停止赛跑失败', 'error')
+    }
+  }
 
   const handleBindAccount = async (e: FormEvent) => {
     e.preventDefault()
@@ -226,24 +300,77 @@ export function CtfPage() {
   return (
     <div>
       <PageHeader
-        eyebrow="Autonomous CTF Kernel"
+        eyebrow="Autonomous CTF Kernel & Model Race"
         title="CTF 夺旗工作台"
-        description="连接竞赛平台拉取赛事与题目，在隔离沙箱中由智能体自动解题、校验 Flag 并生成完整 Writeup。"
+        description="支持多模型赛跑自动托管、按分值优先级排队、批量开解控制、沙箱自动解题与 Writeup 交付。"
         actions={
           <>
+            <Button variant="secondary" size="sm" onClick={() => void handlePrioritizeByScore()}>
+              <ArrowDownWideNarrow className="h-3.5 w-3.5" />
+              按高分排优
+            </Button>
+            {raceStatus?.running ? (
+              <Button variant="danger" size="sm" onClick={() => void handleStopRace()}>
+                <Square className="h-3 w-3" />
+                停止赛跑
+              </Button>
+            ) : (
+              <Button variant="accent" size="sm" onClick={() => setRaceOpen(true)}>
+                <Flame className="h-3.5 w-3.5" />
+                多模型赛跑
+              </Button>
+            )}
             <Button variant="secondary" size="sm" onClick={() => setBindOpen(true)}>
               <KeyRound className="h-3.5 w-3.5" />
-              绑定平台账号
+              绑定账号
             </Button>
             <Button variant="primary" size="sm" loading={syncing} onClick={() => void handleSync()}>
               <RefreshCw className="h-3.5 w-3.5" />
-              同步赛事题板
+              同步题板
             </Button>
           </>
         }
       />
 
-      {/* Top Status Strip: Accounts + Queue + Token Usage */}
+      {/* Active Race Banner */}
+      {raceStatus?.running && (
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-editorial border border-indigo-200 bg-indigo-50/70 px-4 py-3 text-xs dark:border-indigo-900 dark:bg-indigo-950/50">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge pulse className="border-indigo-300 bg-surface text-indigo-700 dark:border-indigo-800 dark:text-indigo-300">
+              多模型赛跑托管中
+            </Badge>
+            <span className="font-mono text-ink">
+              参赛模型：{raceStatus.models.join(' vs ') || '默认组合'}
+            </span>
+            {raceStatus.noSubmit && <Badge>演练模式（不真提交）</Badge>}
+          </div>
+          <Button size="sm" variant="danger" onClick={() => void handleStopRace()}>
+            停止赛跑
+          </Button>
+        </div>
+      )}
+
+      {/* Batch Control Bar */}
+      {selectedIds.length > 0 && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-editorial border border-accent/30 bg-accent-soft/50 px-4 py-2.5 text-xs">
+          <span className="font-medium text-ink">已选择 {selectedIds.length} 道题目</span>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="primary" onClick={() => void handleBatchAction('solve')}>
+              <Play className="h-3 w-3" />
+              批量自动解题
+            </Button>
+            <Button size="sm" variant="danger" onClick={() => void handleBatchAction('cancel')}>
+              <Square className="h-3 w-3" />
+              批量停止
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setSelectedIds([])}>
+              取消选择
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Top Status Strip */}
       <div className="mb-6 grid gap-4 md:grid-cols-3">
         <Card className="p-4">
           <div className="flex items-center justify-between text-xs text-ink-secondary">
@@ -390,7 +517,7 @@ export function CtfPage() {
         <EmptyState
           icon={<Flag className="h-5 w-5" />}
           title="题板为空"
-          description="请先绑定 CTF 竞赛平台账号并点击「同步赛事题板」，或直接通过题目链接拉取单题。"
+          description="请先绑定 CTF 竞赛平台账号并点击「同步题板」，或直接通过题目链接拉取单题。"
           action={
             <Button variant="primary" size="sm" onClick={() => setBindOpen(true)}>
               绑定平台账号
@@ -402,11 +529,25 @@ export function CtfPage() {
           {filtered.map((chal) => {
             const st = CTF_STATUS_META[chal.status] || CTF_STATUS_META.unsolved
             const isSolving = chal.status === 'solving' || chal.status === 'queued'
+            const checked = selectedIds.includes(chal.id)
             return (
-              <Card key={chal.id} className="flex flex-col justify-between p-5">
+              <Card
+                key={chal.id}
+                className={cn(
+                  'flex flex-col justify-between p-5 transition-colors',
+                  checked && 'border-accent ring-1 ring-accent',
+                )}
+              >
                 <div>
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex flex-wrap items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleSelect(chal.id)}
+                        className="rounded border-line-strong"
+                        aria-label={`选择题目 ${chal.title}`}
+                      />
                       <Badge className="font-mono text-[10px]">{chal.category}</Badge>
                       <Badge pulse={chal.status === 'solving'} className={st.badge}>
                         {st.label}
@@ -428,7 +569,7 @@ export function CtfPage() {
 
                   {(chal.confirmedFlag || chal.candidateFlag) && (
                     <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50/70 px-2.5 py-1.5 font-mono text-[11px] text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-200">
-                      <span className="truncate block">
+                      <span className="block truncate">
                         {chal.confirmedFlag || chal.candidateFlag}
                       </span>
                     </div>
@@ -475,6 +616,63 @@ export function CtfPage() {
           })}
         </div>
       )}
+
+      {/* Multi-Model Race Modal */}
+      <Modal
+        open={raceOpen}
+        onClose={() => setRaceOpen(false)}
+        title="启动多模型赛跑自动托管"
+        subtitle="并行调度多组大模型自动抢题，带并发上限与预算保护闸"
+      >
+        <form onSubmit={handleStartRace} className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-ink-secondary">
+                最大并发题数 (1-8)
+              </label>
+              <Input
+                type="number"
+                min={1}
+                max={8}
+                value={raceConcurrent}
+                onChange={(e) => setRaceConcurrent(Number(e.target.value))}
+              />
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-ink-secondary">
+                预算上限 USD（可选）
+              </label>
+              <Input
+                type="number"
+                step="0.5"
+                min="0"
+                value={raceBudget}
+                onChange={(e) => setRaceBudget(e.target.value)}
+                placeholder="不设上限"
+              />
+            </div>
+          </div>
+
+          <label className="flex cursor-pointer items-center gap-2 text-xs text-ink-secondary">
+            <input
+              type="checkbox"
+              checked={raceNoSubmit}
+              onChange={(e) => setRaceNoSubmit(e.target.checked)}
+            />
+            演练模式（只解题记录候选 Flag，不自动向平台提交）
+          </label>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="secondary" onClick={() => setRaceOpen(false)}>
+              取消
+            </Button>
+            <Button type="submit" variant="primary" loading={startingRace}>
+              <Flame className="h-3.5 w-3.5" />
+              立即开赛
+            </Button>
+          </div>
+        </form>
+      </Modal>
 
       {/* Bind Account Modal */}
       <Modal

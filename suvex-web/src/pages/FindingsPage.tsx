@@ -1,30 +1,39 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
+  Bot,
   Check,
   Copy,
   Download,
+  Layers,
+  List,
+  Paperclip,
   RefreshCw,
   Search,
   ShieldAlert,
   ShieldCheck,
   Terminal,
+  Trash2,
 } from 'lucide-react'
 import { api, ApiClientError } from '@/lib/api'
 import { useToast } from '@/lib/toast'
 import {
   FINDING_STATUS_META,
+  formatBytes,
   formatRelativeTime,
   SEVERITY_META,
   VERIFICATION_META,
 } from '@/lib/format'
 import type {
+  FindingAttachmentOut,
+  FindingGroupOut,
   FindingOut,
   FindingStatsOut,
   FindingStatus,
   FindingSummaryOut,
   RemediationOut,
   Severity,
+  VerificationContextOut,
 } from '@/types/api'
 import {
   Badge,
@@ -43,22 +52,29 @@ const STATUSES: FindingStatus[] = ['new', 'confirmed', 'fixed', 'closed', 'false
 
 export function FindingsPage() {
   const [searchParams] = useSearchParams()
+  const navigate = useNavigate()
   const { push } = useToast()
 
+  const [viewMode, setViewMode] = useState<'list' | 'groups'>('list')
   const [items, setItems] = useState<FindingSummaryOut[]>([])
+  const [groups, setGroups] = useState<FindingGroupOut[]>([])
   const [stats, setStats] = useState<FindingStatsOut | null>(null)
   const [loading, setLoading] = useState(true)
 
   const [severity, setSeverity] = useState<string>('')
   const [status, setStatus] = useState<string>('')
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useState(searchParams.get('q') || '')
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
   const scanId = searchParams.get('scanId') || undefined
 
   const [detail, setDetail] = useState<FindingOut | null>(null)
   const [remediation, setRemediation] = useState<RemediationOut | null>(null)
+  const [attachments, setAttachments] = useState<FindingAttachmentOut[]>([])
+  const [verCtx, setVerCtx] = useState<VerificationContextOut | null>(null)
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [statusNote, setStatusNote] = useState('')
   const [updatingStatus, setUpdatingStatus] = useState(false)
+  const [launchingAgent, setLaunchingAgent] = useState(false)
   const [copiedPoc, setCopiedPoc] = useState(false)
 
   const load = useCallback(async () => {
@@ -70,11 +86,13 @@ export function FindingsPage() {
         q: query.trim() || undefined,
         scanId,
       }
-      const [list, st] = await Promise.all([
+      const [list, grps, st] = await Promise.all([
         api.listFindings(params),
+        api.listFindingGroups(params).catch(() => []),
         api.getFindingStats({ scanId }).catch(() => null),
       ])
       setItems(list)
+      setGroups(grps)
       setStats(st)
     } catch (err) {
       push(err instanceof ApiClientError ? err.message : '加载漏洞列表失败', 'error')
@@ -90,14 +108,20 @@ export function FindingsPage() {
   const openDetail = async (id: string) => {
     setLoadingDetail(true)
     setRemediation(null)
+    setAttachments([])
+    setVerCtx(null)
     setStatusNote('')
     try {
-      const [f, rem] = await Promise.all([
+      const [f, rem, atts, vc] = await Promise.all([
         api.getFinding(id),
         api.getFindingRemediation(id).catch(() => null),
+        api.listFindingAttachments(id).catch(() => []),
+        api.getFindingVerificationContext(id).catch(() => null),
       ])
       setDetail(f)
       setRemediation(rem)
+      setAttachments(atts)
+      setVerCtx(vc)
     } catch (err) {
       push(err instanceof ApiClientError ? err.message : '加载漏洞详情失败', 'error')
     } finally {
@@ -120,6 +144,59 @@ export function FindingsPage() {
     }
   }
 
+  const handleBatchStatus = async (nextStatus: FindingStatus) => {
+    if (selectedIds.length === 0) return
+    try {
+      const res = await api.updateFindingsStatus(selectedIds, nextStatus)
+      push(`已批量更新 ${res.changed} 条漏洞为「${FINDING_STATUS_META[nextStatus].label}」`, 'success')
+      setSelectedIds([])
+      await load()
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '批量更新失败', 'error')
+    }
+  }
+
+  const handleLaunchVerificationAgent = async (mode: 'retest' | 'verify') => {
+    if (!detail) return
+    setLaunchingAgent(true)
+    try {
+      const res = await api.runFindingAgent(detail.id, mode)
+      push(
+        mode === 'retest'
+          ? '已派发 Retester 智能体执行独立复测，正在进入作战图'
+          : '已派发 Verifier 智能体核验漏洞修复状态，正在进入作战图',
+        'success',
+      )
+      navigate(`/missions?id=${encodeURIComponent(res.taskId)}`)
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '派发验证智能体失败', 'error')
+    } finally {
+      setLaunchingAgent(false)
+    }
+  }
+
+  const handleUploadAttachments = async (files: FileList | null) => {
+    if (!detail || !files || files.length === 0) return
+    try {
+      const uploaded = await api.uploadFindingAttachments(detail.id, Array.from(files))
+      setAttachments((prev) => [...prev, ...uploaded])
+      push(`已上传 ${uploaded.length} 份存证附件`, 'success')
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '附件上传失败', 'error')
+    }
+  }
+
+  const handleDeleteAttachment = async (attId: string) => {
+    if (!detail) return
+    try {
+      await api.deleteFindingAttachment(detail.id, attId)
+      setAttachments((prev) => prev.filter((a) => a.id !== attId))
+      push('附件已移除', 'default')
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '删除附件失败', 'error')
+    }
+  }
+
   const copyPoc = async (code: string) => {
     try {
       await navigator.clipboard.writeText(code)
@@ -130,12 +207,18 @@ export function FindingsPage() {
     }
   }
 
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    )
+  }
+
   return (
     <div>
       <PageHeader
-        eyebrow="Vulnerability Triage"
+        eyebrow="Vulnerability Triage & Auto-Verification"
         title="漏洞发现与处置"
-        description="证据强度（PoC 确证 / 启发式线索）与人工处置流转严格分离，支持 SARIF 2.1.0 与 JSON 导出。"
+        description="支持按类型聚合视图、批量状态流转、附件存证，以及一键派发 Retester / Verifier 智能体自动复测闭环。"
         actions={
           <>
             <Button variant="secondary" size="sm" onClick={() => void load()}>
@@ -143,23 +226,31 @@ export function FindingsPage() {
               刷新
             </Button>
             <a
-              href={api.getFindingsExportUrl('sarif', { scanId, severity: severity || undefined, status: status || undefined })}
+              href={api.getFindingsExportUrl('sarif', {
+                scanId,
+                severity: severity || undefined,
+                status: status || undefined,
+              })}
               target="_blank"
               rel="noreferrer"
             >
               <Button variant="secondary" size="sm">
                 <Download className="h-3.5 w-3.5" />
-                导出 SARIF
+                SARIF
               </Button>
             </a>
             <a
-              href={api.getFindingsExportUrl('json', { scanId, severity: severity || undefined, status: status || undefined })}
+              href={api.getFindingsExportUrl('json', {
+                scanId,
+                severity: severity || undefined,
+                status: status || undefined,
+              })}
               target="_blank"
               rel="noreferrer"
             >
               <Button variant="secondary" size="sm">
                 <Download className="h-3.5 w-3.5" />
-                导出 JSON
+                JSON
               </Button>
             </a>
           </>
@@ -192,7 +283,29 @@ export function FindingsPage() {
         })}
       </div>
 
-      {/* Filter Bar */}
+      {/* Bulk Action Bar */}
+      {selectedIds.length > 0 && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-editorial border border-accent/30 bg-accent-soft/50 px-4 py-2.5 text-xs">
+          <span className="font-medium text-ink">已选择 {selectedIds.length} 条漏洞</span>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {STATUSES.map((st) => (
+              <Button
+                key={st}
+                size="sm"
+                variant="secondary"
+                onClick={() => void handleBatchStatus(st)}
+              >
+                标为{FINDING_STATUS_META[st].label}
+              </Button>
+            ))}
+            <Button size="sm" variant="ghost" onClick={() => setSelectedIds([])}>
+              取消
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Filter Bar + View Toggle */}
       <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-wrap items-center gap-1.5">
           <button
@@ -224,18 +337,45 @@ export function FindingsPage() {
           ))}
         </div>
 
-        <div className="relative w-full sm:w-64">
-          <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-ink-muted" />
-          <Input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索标题或目标..."
-            className="h-8 pl-8 text-xs"
-          />
+        <div className="flex items-center gap-2">
+          <div className="flex rounded-lg border border-line bg-subtle p-0.5 text-xs">
+            <button
+              type="button"
+              onClick={() => setViewMode('list')}
+              className={cn(
+                'inline-flex items-center gap-1 rounded-md px-2.5 py-1 font-medium',
+                viewMode === 'list' ? 'bg-surface text-ink shadow-editorial' : 'text-ink-muted',
+              )}
+            >
+              <List className="h-3.5 w-3.5" />
+              列表
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('groups')}
+              className={cn(
+                'inline-flex items-center gap-1 rounded-md px-2.5 py-1 font-medium',
+                viewMode === 'groups' ? 'bg-surface text-ink shadow-editorial' : 'text-ink-muted',
+              )}
+            >
+              <Layers className="h-3.5 w-3.5" />
+              分组 ({groups.length})
+            </button>
+          </div>
+
+          <div className="relative w-full sm:w-56">
+            <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-ink-muted" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="搜索标题或目标..."
+              className="h-8 pl-8 text-xs"
+            />
+          </div>
         </div>
       </div>
 
-      {/* Findings Ledger */}
+      {/* Findings Ledger or Grouped View */}
       <Card className="overflow-hidden">
         {loading ? (
           <div className="space-y-3 p-5">
@@ -243,6 +383,44 @@ export function FindingsPage() {
             <Skeleton className="h-12 w-full" />
             <Skeleton className="h-12 w-full" />
           </div>
+        ) : viewMode === 'groups' ? (
+          groups.length === 0 ? (
+            <div className="p-8">
+              <EmptyState icon={<Layers className="h-5 w-5" />} title="暂无聚合漏洞分组" />
+            </div>
+          ) : (
+            <div className="divide-y divide-line">
+              {groups.map((g, idx) => {
+                const sev = SEVERITY_META[g.severity] || SEVERITY_META.info
+                return (
+                  <div key={`${g.title}-${idx}`} className="px-5 py-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge className={sev.badge}>{sev.label}</Badge>
+                        <span className="text-sm font-semibold text-ink">{g.title}</span>
+                        <Badge className="font-mono text-[10px]">{g.category}</Badge>
+                      </div>
+                      <span className="font-mono text-xs text-ink-secondary">
+                        {g.instanceCount} 条实例 · 波及 {g.targetCount} 个目标
+                      </span>
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                      {g.findingIds.slice(0, 6).map((fid, i) => (
+                        <button
+                          key={fid}
+                          type="button"
+                          onClick={() => void openDetail(fid)}
+                          className="rounded border border-line bg-subtle px-2 py-0.5 font-mono text-[11px] text-ink-secondary hover:border-accent hover:text-ink"
+                        >
+                          {g.targets[i] || fid}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )
         ) : items.length === 0 ? (
           <div className="p-8">
             <EmptyState
@@ -257,21 +435,31 @@ export function FindingsPage() {
               const sev = SEVERITY_META[item.severity] || SEVERITY_META.info
               const st = FINDING_STATUS_META[item.status] || FINDING_STATUS_META.new
               const ver = VERIFICATION_META[item.verification] || VERIFICATION_META.none
+              const checked = selectedIds.includes(item.id)
               return (
                 <div
                   key={item.id}
                   onClick={() => void openDetail(item.id)}
                   className="flex cursor-pointer flex-col gap-2.5 px-5 py-4 transition-colors hover:bg-subtle/60 sm:flex-row sm:items-center sm:justify-between"
                 >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge className={sev.badge}>{sev.label}</Badge>
-                      <span className="truncate text-sm font-semibold text-ink">{item.title}</span>
-                      <Badge className={st.badge}>{st.label}</Badge>
+                  <div className="flex min-w-0 flex-1 items-start gap-3">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={() => toggleSelect(item.id)}
+                      className="mt-1 rounded border-line-strong"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge className={sev.badge}>{sev.label}</Badge>
+                        <span className="truncate text-sm font-semibold text-ink">{item.title}</span>
+                        <Badge className={st.badge}>{st.label}</Badge>
+                      </div>
+                      <p className="mt-1 truncate font-mono text-xs text-ink-muted">
+                        {item.target} · {item.category} · {formatRelativeTime(item.discoveredAt)}
+                      </p>
                     </div>
-                    <p className="mt-1 truncate font-mono text-xs text-ink-muted">
-                      {item.target} · {item.category} · {formatRelativeTime(item.discoveredAt)}
-                    </p>
                   </div>
 
                   <div className="flex shrink-0 items-center gap-3 text-xs">
@@ -304,17 +492,41 @@ export function FindingsPage() {
         ) : (
           detail && (
             <div className="space-y-6">
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge className={SEVERITY_META[detail.severity]?.badge}>
-                  {SEVERITY_META[detail.severity]?.label}
-                </Badge>
-                <Badge className={FINDING_STATUS_META[detail.status]?.badge}>
-                  {FINDING_STATUS_META[detail.status]?.label}
-                </Badge>
-                <Badge className="font-mono">{detail.category}</Badge>
-                <span className={cn('text-xs font-medium', VERIFICATION_META[detail.verification]?.tone)}>
-                  {VERIFICATION_META[detail.verification]?.label}
-                </span>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge className={SEVERITY_META[detail.severity]?.badge}>
+                    {SEVERITY_META[detail.severity]?.label}
+                  </Badge>
+                  <Badge className={FINDING_STATUS_META[detail.status]?.badge}>
+                    {FINDING_STATUS_META[detail.status]?.label}
+                  </Badge>
+                  <Badge className="font-mono">{detail.category}</Badge>
+                  <span className={cn('text-xs font-medium', VERIFICATION_META[detail.verification]?.tone)}>
+                    {VERIFICATION_META[detail.verification]?.label}
+                  </span>
+                </div>
+
+                {/* One-Click Auto-Verification Closed Loop */}
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="accent"
+                    loading={launchingAgent}
+                    onClick={() => void handleLaunchVerificationAgent('retest')}
+                  >
+                    <Bot className="h-3.5 w-3.5" />
+                    智能体复测
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    loading={launchingAgent}
+                    onClick={() => void handleLaunchVerificationAgent('verify')}
+                  >
+                    <ShieldCheck className="h-3.5 w-3.5" />
+                    验证修复
+                  </Button>
+                </div>
               </div>
 
               {/* Disposition Controls */}
@@ -393,13 +605,66 @@ export function FindingsPage() {
                 </div>
               )}
 
-              {detail.detail.reasoning && (
-                <div>
-                  <h3 className="mb-1.5 text-xs font-semibold text-ink">智能体推理依据</h3>
-                  <p className="rounded-lg border border-line bg-surface p-3.5 text-xs leading-relaxed text-ink-secondary whitespace-pre-wrap">
-                    {detail.detail.reasoning}
-                  </p>
+              {/* Evidence Attachments */}
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <h3 className="text-xs font-semibold text-ink">存证附件 ({attachments.length})</h3>
+                  <label className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-line bg-surface px-2.5 py-1 text-xs text-ink-secondary hover:border-line-strong hover:text-ink">
+                    <Paperclip className="h-3.5 w-3.5" />
+                    上传截图 / 证据
+                    <input
+                      type="file"
+                      multiple
+                      className="hidden"
+                      onChange={(e) => void handleUploadAttachments(e.target.files)}
+                    />
+                  </label>
                 </div>
+                {attachments.length > 0 && (
+                  <div className="space-y-1.5">
+                    {attachments.map((att) => (
+                      <div
+                        key={att.id}
+                        className="flex items-center justify-between rounded-lg border border-line bg-surface px-3 py-2 text-xs"
+                      >
+                        <a
+                          href={api.getFindingAttachmentUrl(detail.id, att.id)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="truncate font-mono text-accent hover:underline"
+                        >
+                          {att.filename} ({formatBytes(att.sizeBytes)})
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() => void handleDeleteAttachment(att.id)}
+                          className="text-ink-muted hover:text-red-600"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Verification Context */}
+              {verCtx && (verCtx.facts.length > 0 || verCtx.relatedFindings.length > 0) && (
+                <Card className="p-4 text-xs">
+                  <h3 className="font-semibold text-ink">
+                    关联攻击面与验证上下文（{verCtx.facts.length} 事实 · {verCtx.relatedFindings.length} 关联漏洞）
+                  </h3>
+                  {verCtx.note && <p className="mt-1 text-ink-muted">{verCtx.note}</p>}
+                  {verCtx.facts.length > 0 && (
+                    <div className="mt-2 space-y-1">
+                      {verCtx.facts.slice(0, 5).map((f, i) => (
+                        <div key={i} className="rounded bg-subtle px-2.5 py-1.5 font-mono text-[11px] text-ink-secondary">
+                          {String(f.summary || f.factKey || JSON.stringify(f))}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </Card>
               )}
 
               {(remediation || detail.detail.remediation) && (

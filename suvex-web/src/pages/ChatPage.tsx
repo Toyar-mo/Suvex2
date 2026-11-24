@@ -2,20 +2,30 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   Archive,
+  Bot,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   Cpu,
+  Download,
+  FolderOpen,
+  GitBranch,
+  GitFork,
+  ListTodo,
   Loader2,
   MessagesSquare,
   Paperclip,
   Pin,
+  Play,
   Plus,
   Search,
   Send,
   ShieldAlert,
   Sparkles,
   Square,
+  Trash2,
+  Workflow,
   Wrench,
   X,
 } from 'lucide-react'
@@ -23,14 +33,19 @@ import { api, ApiClientError } from '@/lib/api'
 import { useToast } from '@/lib/toast'
 import { formatBytes, formatRelativeTime } from '@/lib/format'
 import type {
+  AgentProfileOut,
   ChatAttachmentOut,
   ChatContextOut,
+  ChatFileOut,
   ChatMessageOut,
   ChatSessionDetailOut,
   ChatSessionOut,
+  ChatSessionTreeOut,
+  ChatTodoOut,
+  ChatTurnRunOut,
   ProviderOut,
 } from '@/types/api'
-import { Badge, Button, EmptyState } from '@/components/ui/primitives'
+import { Badge, Button, Drawer, EmptyState } from '@/components/ui/primitives'
 import { MarkdownView } from '@/components/ui/MarkdownView'
 import { cn } from '@/lib/cn'
 
@@ -167,6 +182,20 @@ function ToolCallCard({
   )
 }
 
+function classifyAttackStage(toolName: string): { stage: string; color: string } {
+  const n = toolName.toLowerCase()
+  if (/recon|scan|nmap|httpx|list|read|search|browse|fetch/.test(n)) {
+    return { stage: '侦察与测绘', color: 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900 dark:bg-blue-950/50 dark:text-blue-300' }
+  }
+  if (/poc|exploit|shell|exec|sql|inject|submit/.test(n)) {
+    return { stage: '利用与验证', color: 'border-orange-200 bg-orange-50 text-orange-700 dark:border-orange-900 dark:bg-orange-950/50 dark:text-orange-300' }
+  }
+  if (/report|write|save|skill|todo/.test(n)) {
+    return { stage: '归档与交付', color: 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-300' }
+  }
+  return { stage: '分析推理', color: 'border-line bg-subtle text-ink-secondary' }
+}
+
 export function ChatPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { push } = useToast()
@@ -177,8 +206,19 @@ export function ChatPage() {
   const [activeId, setActiveId] = useState<string | null>(searchParams.get('session'))
   const [detail, setDetail] = useState<ChatSessionDetailOut | null>(null)
   const [contextInfo, setContextInfo] = useState<ChatContextOut | null>(null)
+  const [todos, setTodos] = useState<ChatTodoOut[]>([])
+  const [turns, setTurns] = useState<ChatTurnRunOut[]>([])
   const [providers, setProviders] = useState<ProviderOut[]>([])
+  const [profiles, setProfiles] = useState<AgentProfileOut[]>([])
   const [selectedProviderId, setSelectedProviderId] = useState<string>('')
+  const [selectedProfileId, setSelectedProfileId] = useState<string>('')
+
+  // Side drawers: Session Tree / Workspace Files & Attack Chain
+  const [treeOpen, setTreeOpen] = useState(false)
+  const [treeData, setTreeData] = useState<ChatSessionTreeOut | null>(null)
+  const [workspaceOpen, setWorkspaceOpen] = useState(false)
+  const [workspaceTab, setWorkspaceTab] = useState<'files' | 'chain'>('files')
+  const [sessionFiles, setSessionFiles] = useState<ChatFileOut[]>([])
 
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<ChatAttachmentOut[]>([])
@@ -189,6 +229,7 @@ export function ChatPage() {
   const [streamReasoning, setStreamReasoning] = useState('')
   const [liveToolOut, setLiveToolOut] = useState('')
   const [loadingDetail, setLoadingDetail] = useState(false)
+  const [resuming, setResuming] = useState(false)
 
   const abortRef = useRef<AbortController | null>(null)
   const bottomRef = useRef<HTMLDivElement | null>(null)
@@ -206,22 +247,32 @@ export function ChatPage() {
     }
   }, [activeId, searchParams, showArchived])
 
-  const loadDetail = useCallback(async (id: string) => {
-    setLoadingDetail(true)
-    try {
-      const [d, ctx] = await Promise.all([
-        api.getChatSession(id, 160),
-        api.getChatContext(id).catch(() => null),
-      ])
-      setDetail(d)
-      setContextInfo(ctx)
-      if (d.providerId) setSelectedProviderId(d.providerId)
-    } catch (err) {
-      push(err instanceof ApiClientError ? err.message : '加载会话失败', 'error')
-    } finally {
-      setLoadingDetail(false)
-    }
-  }, [push])
+  const loadDetail = useCallback(
+    async (id: string) => {
+      setLoadingDetail(true)
+      try {
+        const [d, ctx, tds, trns, fls] = await Promise.all([
+          api.getChatSession(id, 180),
+          api.getChatContext(id).catch(() => null),
+          api.getChatTodos(id).catch(() => []),
+          api.getChatTurns(id).catch(() => []),
+          api.listSessionFiles(id).catch(() => []),
+        ])
+        setDetail(d)
+        setContextInfo(ctx)
+        setTodos(tds)
+        setTurns(trns)
+        setSessionFiles(fls)
+        if (d.providerId) setSelectedProviderId(d.providerId)
+        setSelectedProfileId(d.agentProfileId || '')
+      } catch (err) {
+        push(err instanceof ApiClientError ? err.message : '加载会话失败', 'error')
+      } finally {
+        setLoadingDetail(false)
+      }
+    },
+    [push],
+  )
 
   useEffect(() => {
     void loadSessions()
@@ -232,6 +283,10 @@ export function ChatPage() {
         const def = list.find((p) => p.isDefault) || list[0]
         if (def) setSelectedProviderId((prev) => prev || def.id)
       })
+      .catch(() => {})
+    api
+      .listAgentProfiles()
+      .then((list) => setProfiles(list.filter((p) => p.enabled)))
       .catch(() => {})
   }, [loadSessions])
 
@@ -258,6 +313,53 @@ export function ChatPage() {
     }
   }, [activeId, loadDetail])
 
+  // Auto-reattach live polling if user opens/refreshes a running session
+  useEffect(() => {
+    if (!activeId || !detail?.running || streaming) return
+    let alive = true
+    let cursor = 0
+    setStreamPhase('已自动续接后台运行中的智能体轮次…')
+
+    const poll = async () => {
+      while (alive) {
+        try {
+          const snap = await api.pollChatLive(activeId, cursor)
+          if (!alive) break
+          cursor = snap.next
+          for (const frame of snap.frames) {
+            if (frame.event === 'delta' && typeof frame.data.text === 'string') {
+              setStreamText((prev) => prev + String(frame.data.text))
+            } else if (frame.event === 'reasoning' && typeof frame.data.text === 'string') {
+              setStreamReasoning((prev) => prev + String(frame.data.text))
+            } else if (frame.event === 'phase') {
+              setStreamPhase(`后台运行中 · ${String(frame.data.phase || '')}`)
+            } else if (frame.event === 'message') {
+              setStreamText('')
+              setStreamReasoning('')
+              const m = frame.data as unknown as ChatMessageOut
+              setDetail((prev) => {
+                if (!prev || prev.messages.some((x) => x.id === m.id)) return prev
+                return { ...prev, messages: [...prev.messages, m] }
+              })
+            }
+          }
+          if (snap.ended) {
+            setStreamPhase(null)
+            await loadDetail(activeId)
+            await loadSessions()
+            break
+          }
+        } catch {
+          break
+        }
+      }
+    }
+    void poll()
+    return () => {
+      alive = false
+    }
+  }, [activeId, detail?.running, streaming, loadDetail, loadSessions])
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [detail?.messages.length, streamText, streamReasoning, liveToolOut])
@@ -268,6 +370,26 @@ export function ChatPage() {
     if (!q) return base
     return base.filter((s) => s.title.toLowerCase().includes(q))
   }, [sessions, searchQuery, showArchived])
+
+  const resumableTurn = useMemo(() => {
+    return turns.find((t) => t.resumable && t.status === 'interrupted') || null
+  }, [turns])
+
+  const attackChainSteps = useMemo(() => {
+    if (!detail) return []
+    return detail.messages
+      .filter((m) => m.role === 'tool' || m.toolName)
+      .map((m, idx) => ({
+        index: idx + 1,
+        id: m.id,
+        toolName: m.toolName || 'tool',
+        failed: Boolean(m.toolFailed),
+        durationMs: m.durationMs,
+        createdAt: m.createdAt,
+        summary: m.content.slice(0, 140),
+        ...classifyAttackStage(m.toolName || ''),
+      }))
+  }, [detail])
 
   const handleNewSession = async () => {
     try {
@@ -283,6 +405,55 @@ export function ChatPage() {
   const handleSelectSession = (id: string) => {
     setActiveId(id)
     setSearchParams({ session: id }, { replace: true })
+  }
+
+  const handleProfileChange = async (profileId: string) => {
+    setSelectedProfileId(profileId)
+    if (!activeId) return
+    try {
+      await api.updateChatSettings(activeId, { agentProfileId: profileId || null })
+      push(profileId ? '已绑定 Agent 角色画像（工具与技能边界生效）' : '已切换为平台默认角色', 'success')
+      await loadDetail(activeId)
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '切换角色失败', 'error')
+    }
+  }
+
+  const handleFork = async (messageSeq?: number) => {
+    if (!activeId) return
+    try {
+      const forked = await api.forkChatSession(activeId, { messageSeq })
+      push(`已分叉出新分支：${forked.title}`, 'success')
+      await loadSessions()
+      handleSelectSession(forked.id)
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '分叉会话失败', 'error')
+    }
+  }
+
+  const handleOpenTree = async () => {
+    if (!activeId) return
+    setTreeOpen(true)
+    try {
+      const t = await api.getChatSessionTree(activeId)
+      setTreeData(t)
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '加载分支树失败', 'error')
+    }
+  }
+
+  const handleResumeTurn = async (runId: string) => {
+    if (!activeId) return
+    setResuming(true)
+    try {
+      await api.resumeChatTurn(activeId, runId)
+      push('已接手并恢复中断的对话轮次', 'success')
+      await loadDetail(activeId)
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '恢复轮次失败', 'error')
+    } finally {
+      setResuming(false)
+    }
   }
 
   const handleTogglePin = async (s: ChatSessionOut) => {
@@ -350,8 +521,7 @@ export function ChatPage() {
       }
     }
 
-    // If a turn is currently streaming, send as an interjection
-    if (streaming) {
+    if (streaming || detail?.running) {
       try {
         const msg = await api.interjectChat(sid, text)
         setDetail((prev) => (prev ? { ...prev, messages: [...prev.messages, msg] } : prev))
@@ -429,15 +599,9 @@ export function ChatPage() {
               return { ...prev, messages: [...withoutLocal, msg] }
             })
           },
-          onAwaiting: () => {
-            setStreamPhase('等待人工审批工具调用')
-          },
-          onError: (message) => {
-            push(message, 'error')
-          },
-          onDone: () => {
-            setStreamPhase(null)
-          },
+          onAwaiting: () => setStreamPhase('等待人工审批工具调用'),
+          onError: (message) => push(message, 'error'),
+          onDone: () => setStreamPhase(null),
         },
         ctrl.signal,
       )
@@ -543,6 +707,9 @@ export function ChatPage() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
                       {s.pinned && <Pin className="h-3 w-3 shrink-0 text-accent" />}
+                      {s.forkedFromSessionId && (
+                        <GitFork className="h-3 w-3 shrink-0 text-ink-muted" />
+                      )}
                       {s.running && (
                         <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent" />
                       )}
@@ -588,7 +755,7 @@ export function ChatPage() {
       {/* Main Conversation Canvas */}
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Session Header Bar */}
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line bg-surface px-5 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-line bg-surface px-5 py-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <h1 className="truncate text-sm font-semibold text-ink">
@@ -606,7 +773,7 @@ export function ChatPage() {
                   上下文 {contextInfo.percent}% ({contextInfo.usedTokens.toLocaleString()} /{' '}
                   {contextInfo.windowTokens.toLocaleString()})
                 </span>
-                {contextInfo.percent >= 55 && (
+                {contextInfo.percent >= 50 && (
                   <button
                     type="button"
                     onClick={handleCompact}
@@ -619,29 +786,121 @@ export function ChatPage() {
             )}
           </div>
 
-          <div className="flex items-center gap-2">
-            {providers.length > 0 && (
-              <div className="flex items-center gap-1.5 rounded-lg border border-line bg-subtle px-2.5 py-1 text-xs">
-                <Cpu className="h-3.5 w-3.5 text-ink-muted" />
+          <div className="flex flex-wrap items-center gap-1.5">
+            {/* Agent Profile Binding Selector */}
+            {profiles.length > 0 && (
+              <div className="flex items-center gap-1.5 rounded-lg border border-line bg-subtle px-2 py-1 text-xs">
+                <Bot className="h-3.5 w-3.5 text-accent" />
                 <select
-                  value={selectedProviderId}
-                  onChange={(e) => setSelectedProviderId(e.target.value)}
-                  className="bg-transparent text-xs text-ink focus:outline-none"
+                  value={selectedProfileId}
+                  onChange={(e) => void handleProfileChange(e.target.value)}
+                  className="max-w-[140px] bg-transparent text-xs text-ink focus:outline-none"
+                  title="绑定 Agent 角色画像（控制工具白名单与技能注入）"
                 >
-                  {providers.map((p) => (
+                  <option value="">默认通用角色</option>
+                  {profiles.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.label} ({p.model})
+                      {p.name}
                     </option>
                   ))}
                 </select>
               </div>
             )}
-            <Button size="sm" variant="secondary" className="lg:hidden" onClick={handleNewSession}>
-              <Plus className="h-3.5 w-3.5" />
-              新会话
-            </Button>
+
+            {/* Model Selector */}
+            {providers.length > 0 && (
+              <div className="flex items-center gap-1.5 rounded-lg border border-line bg-subtle px-2 py-1 text-xs">
+                <Cpu className="h-3.5 w-3.5 text-ink-muted" />
+                <select
+                  value={selectedProviderId}
+                  onChange={(e) => setSelectedProviderId(e.target.value)}
+                  className="max-w-[150px] bg-transparent text-xs text-ink focus:outline-none"
+                >
+                  {providers.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {activeId && (
+              <>
+                <Button size="sm" variant="ghost" onClick={() => void handleFork()} title="从当前位置分叉新分支">
+                  <GitFork className="h-3.5 w-3.5" />
+                  分叉
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => void handleOpenTree()} title="查看会话分支树">
+                  <GitBranch className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  size="sm"
+                  variant={workspaceOpen ? 'primary' : 'secondary'}
+                  onClick={() => setWorkspaceOpen((v) => !v)}
+                  title="打开工作区文件与攻击链图"
+                >
+                  <Workflow className="h-3.5 w-3.5" />
+                  工作区 ({sessionFiles.length})
+                </Button>
+                <a href={api.getChatExportUrl(activeId)} target="_blank" rel="noreferrer">
+                  <Button size="sm" variant="ghost" title="导出 JSONL 审计日志">
+                    <Download className="h-3.5 w-3.5" />
+                  </Button>
+                </a>
+              </>
+            )}
           </div>
         </div>
+
+        {/* Live Plan / Todo Strip */}
+        {todos.length > 0 && (
+          <div className="border-b border-line bg-subtle/70 px-5 py-2">
+            <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-2 text-xs">
+              <span className="inline-flex items-center gap-1 font-medium text-ink">
+                <ListTodo className="h-3.5 w-3.5 text-accent" />
+                执行计划 ({todos.filter((t) => t.status === 'done').length}/{todos.length})
+              </span>
+              {todos.map((t) => (
+                <span
+                  key={t.seq}
+                  className={cn(
+                    'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px]',
+                    t.status === 'done'
+                      ? 'border-emerald-200 bg-emerald-50 text-emerald-700 line-through dark:border-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-300'
+                      : t.status === 'in_progress'
+                        ? 'border-indigo-200 bg-indigo-50 text-indigo-700 dark:border-indigo-900 dark:bg-indigo-950/50 dark:text-indigo-300'
+                        : 'border-line bg-surface text-ink-secondary',
+                  )}
+                >
+                  {t.status === 'done' && <CheckCircle2 className="h-3 w-3" />}
+                  {t.text}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Resumable Interrupted Turn Banner */}
+        {resumableTurn && !streaming && !detail?.running && (
+          <div className="border-b border-amber-200 bg-amber-50/80 px-5 py-2.5 dark:border-amber-900/60 dark:bg-amber-950/40">
+            <div className="mx-auto flex max-w-3xl items-center justify-between gap-3 text-xs">
+              <span className="text-amber-900 dark:text-amber-200">
+                检测到上一轮执行在半路中断（已完成 {resumableTurn.roundIndex} 回合、调用{' '}
+                {resumableTurn.toolsUsed} 次工具），可一键续跑接手。
+              </span>
+              <Button
+                size="sm"
+                variant="primary"
+                loading={resuming}
+                onClick={() => void handleResumeTurn(resumableTurn.id)}
+              >
+                <Play className="h-3 w-3" />
+                恢复续跑
+              </Button>
+            </div>
+          </div>
+        )}
 
         {/* Message Stream */}
         <div className="flex-1 overflow-y-auto px-5 py-6">
@@ -655,7 +914,7 @@ export function ChatPage() {
               <EmptyState
                 icon={<MessagesSquare className="h-5 w-5" />}
                 title="向 Suvex 2 智能体下达安全任务"
-                description="你可以直接让它分析目标 URL、审计上传的代码/流量包、复现漏洞或启动 CTF 沙箱解题。"
+                description="上方可直接绑定自定义 Agent 角色画像约束工具边界，支持分支 Fork、实时计划条、附件分析与攻击链可视化。"
                 action={
                   <div className="flex flex-wrap justify-center gap-2">
                     {[
@@ -679,7 +938,15 @@ export function ChatPage() {
               detail.messages.map((msg) => {
                 if (msg.role === 'user') {
                   return (
-                    <div key={msg.id} className="flex justify-end">
+                    <div key={msg.id} className="group flex items-start justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleFork(msg.seq)}
+                        className="mt-2 hidden rounded p-1 text-ink-muted hover:bg-wash hover:text-ink group-hover:block"
+                        title="从此消息分叉新分支"
+                      >
+                        <GitFork className="h-3.5 w-3.5" />
+                      </button>
                       <div className="max-w-[82%] rounded-2xl rounded-tr-sm bg-ink px-4 py-2.5 text-sm leading-relaxed text-canvas shadow-sm">
                         <p className="whitespace-pre-wrap">{msg.content}</p>
                       </div>
@@ -692,10 +959,23 @@ export function ChatPage() {
                 }
 
                 return (
-                  <div key={msg.id} className="rounded-editorial border border-line bg-surface p-5 shadow-editorial">
+                  <div
+                    key={msg.id}
+                    className="group rounded-editorial border border-line bg-surface p-5 shadow-editorial"
+                  >
                     <div className="mb-2 flex items-center justify-between text-[11px] text-ink-muted">
                       <span className="font-mono font-medium text-ink-secondary">Suvex Agent</span>
-                      <span className="font-mono">{formatRelativeTime(msg.createdAt)}</span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleFork(msg.seq)}
+                          className="hidden items-center gap-1 rounded px-1.5 py-0.5 text-[10px] hover:bg-wash hover:text-ink group-hover:inline-flex"
+                        >
+                          <GitFork className="h-3 w-3" />
+                          在此分叉
+                        </button>
+                        <span className="font-mono">{formatRelativeTime(msg.createdAt)}</span>
+                      </div>
                     </div>
                     {msg.reasoning && <ReasoningAccordion text={msg.reasoning} />}
                     {msg.content && <MarkdownView content={msg.content} />}
@@ -704,8 +984,8 @@ export function ChatPage() {
               })
             )}
 
-            {/* Live Streaming Turn Card */}
-            {streaming && (
+            {/* Live Streaming / Reattached Turn Card */}
+            {(streaming || streamPhase) && (
               <div className="rounded-editorial border border-accent/30 bg-surface p-5 shadow-editorial">
                 <div className="mb-3 flex items-center justify-between text-xs">
                   <span className="inline-flex items-center gap-2 font-medium text-accent">
@@ -791,7 +1071,7 @@ export function ChatPage() {
                   }
                 }}
                 placeholder={
-                  streaming
+                  streaming || detail?.running
                     ? '运行中可输入插话，智能体会在下一轮读取…'
                     : '输入安全指令、目标或问题（Enter 发送，Shift+Enter 换行）'
                 }
@@ -806,12 +1086,182 @@ export function ChatPage() {
                 className="h-8 px-3"
               >
                 <Send className="h-3.5 w-3.5" />
-                {streaming ? '插话' : '发送'}
+                {streaming || detail?.running ? '插话' : '发送'}
               </Button>
             </div>
           </div>
         </div>
       </div>
+
+      {/* Session Tree Drawer */}
+      <Drawer
+        open={treeOpen}
+        onClose={() => setTreeOpen(false)}
+        title="会话分支树"
+        subtitle="同一对话历史下的所有探索分支，点击即可切换"
+      >
+        {!treeData || treeData.nodes.length === 0 ? (
+          <p className="text-xs text-ink-muted">当前会话尚无分支。</p>
+        ) : (
+          <div className="space-y-2.5">
+            {treeData.nodes.map((node) => (
+              <div
+                key={node.id}
+                onClick={() => {
+                  handleSelectSession(node.id)
+                  setTreeOpen(false)
+                }}
+                className={cn(
+                  'cursor-pointer rounded-editorial border p-3.5 transition-colors',
+                  node.current
+                    ? 'border-accent bg-accent-soft/50'
+                    : 'border-line bg-surface hover:border-line-strong',
+                )}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-ink">{node.title || node.id}</span>
+                  {node.current && <Badge>当前分支</Badge>}
+                </div>
+                <p className="mt-1 font-mono text-[10px] text-ink-muted">
+                  {node.messageCount} 条消息 ·{' '}
+                  {node.forkedFromSeq != null ? `分叉自 #${node.forkedFromSeq}` : '主干根节点'}
+                </p>
+                {node.branchSummary && (
+                  <p className="mt-1.5 text-xs text-ink-secondary">{node.branchSummary}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </Drawer>
+
+      {/* Workspace Files & Attack Chain Drawer */}
+      <Drawer
+        open={workspaceOpen}
+        onClose={() => setWorkspaceOpen(false)}
+        title="会话工作区与攻击链"
+        subtitle="检视沙箱产物文件与本会话自动提取的攻击链路"
+      >
+        <div className="mb-4 flex gap-1.5 border-b border-line pb-3">
+          <button
+            type="button"
+            onClick={() => setWorkspaceTab('files')}
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium',
+              workspaceTab === 'files'
+                ? 'bg-ink text-canvas'
+                : 'border border-line bg-surface text-ink-secondary',
+            )}
+          >
+            <FolderOpen className="h-3.5 w-3.5" />
+            工作区文件 ({sessionFiles.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setWorkspaceTab('chain')}
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium',
+              workspaceTab === 'chain'
+                ? 'bg-ink text-canvas'
+                : 'border border-line bg-surface text-ink-secondary',
+            )}
+          >
+            <Workflow className="h-3.5 w-3.5" />
+            攻击链路径 ({attackChainSteps.length})
+          </button>
+        </div>
+
+        {workspaceTab === 'files' ? (
+          sessionFiles.length === 0 ? (
+            <EmptyState
+              icon={<FolderOpen className="h-4 w-4" />}
+              title="工作区暂无文件"
+              description="智能体写入 `/work/persist` 的脚本、取证包和报告都会实时列在这里。"
+            />
+          ) : (
+            <div className="space-y-2">
+              {sessionFiles.map((f) => (
+                <div
+                  key={f.path}
+                  className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3.5 py-2.5 text-xs"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate font-mono font-medium text-ink">{f.name}</p>
+                    <p className="font-mono text-[10px] text-ink-muted">
+                      {f.path} · {formatBytes(f.sizeBytes)}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    {activeId && (
+                      <>
+                        <a
+                          href={api.getChatFileDownloadUrl(activeId, f.path)}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          <Button size="sm" variant="ghost">
+                            <Download className="h-3.5 w-3.5" />
+                          </Button>
+                        </a>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={async () => {
+                            await api.deleteChatFile(activeId, f.path)
+                            setSessionFiles((prev) => prev.filter((x) => x.path !== f.path))
+                            push(`已删除 ${f.name}`, 'default')
+                          }}
+                        >
+                          <Trash2 className="h-3.5 w-3.5 text-ink-muted hover:text-red-600" />
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )
+        ) : attackChainSteps.length === 0 ? (
+          <EmptyState
+            icon={<Workflow className="h-4 w-4" />}
+            title="暂无攻击链步骤"
+            description="当智能体在会话中调用侦察、利用与验证工具后，会自动构建阶段化的攻击链路图。"
+          />
+        ) : (
+          <div className="relative space-y-3 pl-5 before:absolute before:bottom-3 before:left-2 before:top-3 before:w-px before:bg-line-strong">
+            {attackChainSteps.map((step) => (
+              <div
+                key={step.id}
+                className="relative rounded-lg border border-line bg-surface p-3.5 text-xs shadow-editorial"
+              >
+                <span
+                  className={cn(
+                    'absolute -left-[17px] top-4 h-2.5 w-2.5 rounded-full border-2 border-canvas',
+                    step.failed ? 'bg-red-500' : 'bg-accent',
+                  )}
+                />
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[10px] text-ink-muted">#{step.index}</span>
+                    <Badge className={step.color}>{step.stage}</Badge>
+                    <span className="font-mono font-semibold text-ink">{step.toolName}</span>
+                  </div>
+                  {step.durationMs != null && (
+                    <span className="font-mono text-[10px] text-ink-muted">
+                      {(step.durationMs / 1000).toFixed(2)}s
+                    </span>
+                  )}
+                </div>
+                {step.summary && (
+                  <p className="mt-1.5 line-clamp-2 font-mono text-[11px] text-ink-secondary">
+                    {step.summary}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </Drawer>
     </div>
   )
 }

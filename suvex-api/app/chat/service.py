@@ -576,6 +576,21 @@ def update_settings(db: Session, *, session: ChatSession, payload: Any) -> ChatS
         persona = payload.persona
         session.persona = None if persona in (None, "default") else persona
 
+    if "agentProfileId" in fields:
+        raw_profile = payload.agentProfileId
+        if not raw_profile:
+            session.agent_profile_id = None
+        else:
+            from app.agents.binding import resolve_agent_binding
+
+            binding = resolve_agent_binding(db, raw_profile)
+            session.agent_profile_id = binding.profile_id if binding else None
+            if binding:
+                if "skillNames" not in fields and binding.skills:
+                    session.skill_names = list(binding.skills)
+                if "mcpServerNames" not in fields and binding.mcp_servers:
+                    session.mcp_server_names = list(binding.mcp_servers)
+
     if "providerId" in fields:
         session.provider_id = payload.providerId or None
 

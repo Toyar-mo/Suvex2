@@ -298,8 +298,12 @@ export interface ChatSessionOut {
   challengeId: string | null
   project: string | null
   persona: string | null
+  agentProfileId?: string | null
   providerId: string | null
   requireApproval: boolean
+  forkedFromSessionId?: string | null
+  forkedFromSeq?: number | null
+  branchSummary?: string | null
 }
 
 export interface ChatMessageOut {
@@ -907,4 +911,237 @@ export interface KernelWorkOrderOut {
   markdown: string
   filename: string
   count: number
+}
+
+/* ==========================================================================
+   Suvex 2.1 Upgrade Types
+   ========================================================================== */
+
+export interface SystemTelemetryOut {
+  version: string
+  uptimeSeconds: number
+  generatedAt: string
+  eventBus: {
+    mode: string
+    activeSubscribers: number
+    totalPublished: number
+    lastPublishedAt: string | null
+  }
+  scans: {
+    active: number
+    queued: number
+    completed24h: number
+    failed24h: number
+  }
+  ctf: {
+    total: number
+    solved: number
+    solving: number
+  }
+  providers: {
+    total: number
+    verified: number
+    defaultLabel: string | null
+    defaultModel: string | null
+  }
+  sandboxes: {
+    dockerAvailable: boolean
+    runningTotal: number
+    sandboxCount: number
+    containers: Array<{ name: string; image: string; status: string; isSandbox: boolean }>
+  }
+  dbPool: {
+    size?: number
+    checkedOut?: number
+    overflow?: number
+  }
+}
+
+export interface QualityOut {
+  scans: { total: number; completed: number; failed: number; aborted: number; avgDurationSec: number | null }
+  findings: { total: number; verified: number; needsFollowUp: number; none: number; falsePositive: number; falsePositiveRate: number | null }
+  challenges: { total: number; solved: number; solveRate: number | null; candidateCount: number; wrongSubmissions: number }
+  coverage: { surfaces: number; targets: number }
+  generatedAt: string
+}
+
+export interface TokenUsageSeriesPoint {
+  date: string
+  prompt: number
+  completion: number
+  total: number
+  calls: number
+}
+
+export interface TokenUsageTrendOut {
+  days: number
+  series: TokenUsageSeriesPoint[]
+  totals: { prompt: number; completion: number; total: number; calls: number; unreportedCalls: number }
+  cacheTracked: boolean
+}
+
+export interface ChatSessionTreeNode {
+  id: string
+  title: string
+  forkedFromSessionId: string | null
+  forkedFromSeq: number | null
+  branchSummary: string | null
+  messageCount: number
+  createdAt: string
+  current: boolean
+}
+
+export interface ChatSessionTreeOut {
+  rootSessionId: string
+  currentSessionId: string
+  nodes: ChatSessionTreeNode[]
+}
+
+export interface ChatFileOut {
+  path: string
+  name: string
+  sizeBytes: number
+  modifiedAt: number
+}
+
+export interface ChatLiveSnapshot {
+  frames: Array<{ event: string; data: Record<string, unknown> }>
+  next: number
+  ended: boolean
+}
+
+export interface CompareOut {
+  a: ScanOut
+  b: ScanOut
+  onlyInA: string[]
+  onlyInB: string[]
+  common: string[]
+  verdict: string
+}
+
+export interface FindingGroupOut {
+  title: string
+  severity: Severity
+  category: string
+  instanceCount: number
+  targetCount: number
+  targets: string[]
+  findingIds: string[]
+  byStatus: Record<string, number>
+}
+
+export interface FindingAttachmentOut {
+  id: string
+  findingId: string
+  filename: string
+  contentType: string
+  sizeBytes: number
+  uploadedAt: string
+  uploadedBy: string | null
+}
+
+export interface VerificationContextOut {
+  finding: Record<string, unknown>
+  facts: Array<Record<string, unknown>>
+  relatedFindings: Array<Record<string, unknown>>
+  checks: Record<string, unknown>
+  note: string
+}
+
+export interface SurfaceNodeOut {
+  factKey: string
+  category: string
+  summary: string
+  detail: string
+  confidence: string
+  trustLevel: string
+  recordedBy: string
+  updatedAt: string
+  version: number
+}
+
+export interface SurfaceEdgeOut {
+  from?: string
+  from_?: string
+  type: string
+  to: string
+}
+
+export interface SurfaceMapOut {
+  target: string
+  nodes: SurfaceNodeOut[]
+  edges: SurfaceEdgeOut[]
+  truncated: boolean
+}
+
+export interface HoneypotScoreOut {
+  score: number
+  verdict: string
+  matches: Array<{ id: string; category: string; confidence: number; matched: string; source: string }>
+  note: string
+}
+
+export interface RaceStatusOut {
+  running: boolean
+  models: string[]
+  challenges: Record<string, unknown>
+  cost: Record<string, unknown>
+  match: string
+  overview: Record<string, unknown>
+  noSubmit: boolean
+  report: Record<string, unknown> | null
+  error: string | null
+}
+
+/* Multi-Agent Mission Graph (/agent-tasks) */
+export interface MissionTaskOut {
+  id: string
+  title: string
+  objective: string
+  scope: string
+  status: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface MissionGoalOut {
+  id: string
+  seq: number
+  text: string
+  status: string
+  evidence: string
+}
+
+export interface MissionIntentOut {
+  id: string
+  goalId: string | null
+  seq: number
+  summary: string
+  status: string
+  priority: number
+  workerSessionId: string | null
+  result: string
+}
+
+export interface MissionRunOut {
+  id: string
+  intentId: string | null
+  role: string
+  sessionId: string | null
+  status: string
+  output: string
+}
+
+export interface MissionScanLinkOut {
+  id: string
+  target: string
+  status: string
+}
+
+export interface MissionGraphOut {
+  task: MissionTaskOut
+  goals: MissionGoalOut[]
+  intents: MissionIntentOut[]
+  runs: MissionRunOut[]
+  scans: MissionScanLinkOut[]
 }

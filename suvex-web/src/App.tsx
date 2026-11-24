@@ -25,6 +25,7 @@ import { ToolsPage } from '@/pages/ToolsPage'
 import { SkillsPage } from '@/pages/SkillsPage'
 import { AgentsPage } from '@/pages/AgentsPage'
 import { ApprovalsPage } from '@/pages/ApprovalsPage'
+import { MissionsPage } from '@/pages/MissionsPage'
 
 function ProtectedShell() {
   const { loading, initialized, user } = useAuth()
@@ -56,6 +57,7 @@ export function AppRoutes() {
         <Route path="/overview" element={<OverviewPage />} />
         <Route path="/chat" element={<ChatPage />} />
         <Route path="/scans" element={<ScansPage />} />
+        <Route path="/missions" element={<MissionsPage />} />
         <Route path="/activity" element={<ActivityPage />} />
         <Route path="/intranet" element={<IntranetPage />} />
 

@@ -135,6 +135,7 @@ class ChatSessionOut(CamelModel):
 
     project: str | None = None
     persona: str | None = None
+    agentProfileId: str | None = None
     providerId: str | None = None
     requireApproval: bool = False
     autoApproveUntil: IsoDateTime | None = None
@@ -369,6 +370,9 @@ class ChatSettingsIn(StrictModel):
         None, description="归属项目名；显式 null 表示移出项目"
     )
     persona: ChatPersonaId | None = Field(None, description="人格；显式 null 退回默认")
+    agentProfileId: str | None = Field(
+        None, max_length=64, description="绑定的 Agent 角色画像 id/key；显式 null 解除绑定"
+    )
     providerId: str | None = Field(
         None, max_length=64, description="模型接入点；显式 null 退回平台默认"
     )

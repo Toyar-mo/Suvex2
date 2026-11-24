@@ -10,22 +10,29 @@ import type {
   ChatAttachmentOut,
   ChatContextOut,
   ChatFileListOut,
+  ChatFileOut,
+  ChatLiveSnapshot,
   ChatMessageOut,
   ChatPersonaOut,
   ChatSessionDetailOut,
   ChatSessionOut,
+  ChatSessionTreeOut,
   ChatTodoOut,
   ChatTurnRunOut,
+  CompareOut,
   CoverageOut,
   CredentialCreatePayload,
   CredentialOut,
   DeepCheckOut,
+  FindingAttachmentOut,
+  FindingGroupOut,
   FindingOut,
   FindingStatsOut,
   FindingStatus,
   FindingSummaryOut,
   HealthOut,
   HintOut,
+  HoneypotScoreOut,
   IntranetKind,
   IntranetSessionOut,
   IntranetStatus,
@@ -43,10 +50,16 @@ import type {
   McpServerIn,
   McpServerOut,
   McpServerTestOut,
+  MissionGoalOut,
+  MissionGraphOut,
+  MissionIntentOut,
+  MissionTaskOut,
   OverviewOut,
   ProviderCreatePayload,
   ProviderOut,
   ProviderVerifyResult,
+  QualityOut,
+  RaceStatusOut,
   RecentEventsOut,
   RemediationOut,
   ReportDocumentOut,
@@ -65,8 +78,12 @@ import type {
   SkillDetailOut,
   SkillUsageListOut,
   StagedAttachmentsOut,
+  SurfaceMapOut,
+  SystemTelemetryOut,
+  TokenUsageTrendOut,
   UserEnvelope,
   UserOut,
+  VerificationContextOut,
   WriteupOut,
 } from '@/types/api'
 
@@ -328,7 +345,12 @@ export const api = {
   listChatPersonas: () => request<ChatPersonaOut[]>('/chat/personas'),
   updateChatSettings: (
     sessionId: string,
-    payload: { providerId?: string | null; persona?: string | null; requireApproval?: boolean },
+    payload: {
+      providerId?: string | null
+      persona?: string | null
+      agentProfileId?: string | null
+      requireApproval?: boolean
+    },
   ) =>
     request<ChatSessionOut>(`/chat/sessions/${encodeURIComponent(sessionId)}/settings`, {
       method: 'PATCH',
@@ -717,4 +739,147 @@ export const api = {
   /* Phase 2: Approvals */
   listApprovals: (status?: string, limit = 100) =>
     request<ChatApprovalOut[]>(`/chat/approvals${qs({ status, limit })}`),
+
+  /* ========================================================================
+     Suvex 2.1 Upgraded Endpoints
+     ======================================================================== */
+  getSystemTelemetry: () => request<SystemTelemetryOut>('/system/telemetry'),
+  getOverviewQuality: () => request<QualityOut>('/overview/quality'),
+  getOverviewTokenUsage: (days = 14) =>
+    request<TokenUsageTrendOut>(`/overview/token-usage${qs({ days })}`),
+
+  /* Chat Advanced */
+  forkChatSession: (sessionId: string, payload?: { messageSeq?: number; title?: string }) =>
+    request<ChatSessionOut>(`/chat/sessions/${encodeURIComponent(sessionId)}/fork`, {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    }),
+  getChatSessionTree: (sessionId: string) =>
+    request<ChatSessionTreeOut>(`/chat/sessions/${encodeURIComponent(sessionId)}/tree`),
+  listSessionFiles: (sessionId: string) =>
+    request<ChatFileOut[]>(`/chat/sessions/${encodeURIComponent(sessionId)}/files`),
+  uploadSessionFile: (sessionId: string, file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return request<ChatFileOut>(`/chat/sessions/${encodeURIComponent(sessionId)}/files`, {
+      method: 'POST',
+      body: fd,
+    })
+  },
+  pollChatLive: (sessionId: string, after = 0) =>
+    request<ChatLiveSnapshot>(`/chat/sessions/${encodeURIComponent(sessionId)}/live${qs({ after })}`),
+  getChatExportUrl: (sessionId: string) =>
+    `${API_BASE}/chat/sessions/${encodeURIComponent(sessionId)}/export`,
+
+  /* Scans Compare & Batch */
+  compareScans: (a: string, b: string) =>
+    request<CompareOut>(`/scans/compare${qs({ a, b })}`),
+  archiveScansBatch: (ids: string[], archived = true) =>
+    request<{ changed: number; skipped: number }>('/scans/batch/archive', {
+      method: 'POST',
+      body: JSON.stringify({ ids, archived }),
+    }),
+  rerunScansBatch: (ids: string[], authorization: ScanCreatePayload['authorization']) =>
+    request<{ created: ScanOut[]; failed: Array<{ scanId: string; error: string }> }>('/scans/batch/rerun', {
+      method: 'POST',
+      body: JSON.stringify({ ids, authorization }),
+    }),
+
+  /* Findings Groups, Retest/Verify, Attachments, Verification Context */
+  listFindingGroups: (params?: { severity?: string; status?: string; q?: string; scanId?: string }) =>
+    request<FindingGroupOut[]>(`/findings/groups${qs(params || {})}`),
+  runFindingAgent: (findingId: string, mode: 'retest' | 'verify') =>
+    request<{ taskId: string }>(`/findings/${encodeURIComponent(findingId)}/agent-run${qs({ mode })}`, {
+      method: 'POST',
+    }),
+  listFindingAttachments: (findingId: string) =>
+    request<FindingAttachmentOut[]>(`/findings/${encodeURIComponent(findingId)}/attachments`),
+  uploadFindingAttachments: (findingId: string, files: File[]) => {
+    const fd = new FormData()
+    for (const f of files) fd.append('files', f)
+    return request<FindingAttachmentOut[]>(`/findings/${encodeURIComponent(findingId)}/attachments`, {
+      method: 'POST',
+      body: fd,
+    })
+  },
+  deleteFindingAttachment: (findingId: string, attachmentId: string) =>
+    request<void>(
+      `/findings/${encodeURIComponent(findingId)}/attachments/${encodeURIComponent(attachmentId)}`,
+      { method: 'DELETE' },
+    ),
+  getFindingAttachmentUrl: (findingId: string, attachmentId: string) =>
+    `${API_BASE}/findings/${encodeURIComponent(findingId)}/attachments/${encodeURIComponent(attachmentId)}/content`,
+  getFindingVerificationContext: (findingId: string) =>
+    request<VerificationContextOut>(`/findings/${encodeURIComponent(findingId)}/verification-context`),
+
+  /* Assets Surface Map & Honeypot */
+  getAssetSurface: (target: string) =>
+    request<SurfaceMapOut>(`/assets/surface${qs({ target })}`),
+  scoreHoneypot: (payload: { banner: string; title: string; headers: Record<string, string>; body: string }) =>
+    request<HoneypotScoreOut>('/assets/honeypot/score', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  /* CTF Race & Batch */
+  getRaceStatus: () => request<RaceStatusOut>('/ctf-race/status'),
+  startRace: (payload: {
+    models?: string[]
+    maxConcurrent?: number
+    maxBudgetUsd?: number | null
+    noSubmit?: boolean
+  }) =>
+    request<RaceStatusOut>('/ctf-race/start', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  stopRace: () => request<RaceStatusOut>('/ctf-race/stop', { method: 'POST' }),
+  batchCtfChallenges: (action: 'solve' | 'cancel', challengeIds: string[]) =>
+    request<{ requested: number; succeeded: number; failed: number }>('/kernel/challenges/batch', {
+      method: 'POST',
+      body: JSON.stringify({ action, challengeIds, resume: false }),
+    }),
+  prioritizeCtfByScore: (competitionId?: string, limit = 10) =>
+    request<{ changed: number }>('/kernel/priorities/by-score', {
+      method: 'POST',
+      body: JSON.stringify({ competitionId: competitionId || null, limit }),
+    }),
+
+  /* Multi-Agent Mission Graph (/agent-tasks) */
+  listMissions: () => request<MissionTaskOut[]>('/agent-tasks'),
+  createMission: (payload: { title: string; objective: string; scope: string }) =>
+    request<MissionGraphOut>('/agent-tasks', { method: 'POST', body: JSON.stringify(payload) }),
+  getMissionGraph: (taskId: string) =>
+    request<MissionGraphOut>(`/agent-tasks/${encodeURIComponent(taskId)}`),
+  addMissionGoal: (taskId: string, text: string) =>
+    request<MissionGoalOut>(`/agent-tasks/${encodeURIComponent(taskId)}/goals`, {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    }),
+  addMissionIntent: (taskId: string, payload: { summary: string; goalId?: string | null; priority?: number }) =>
+    request<MissionIntentOut>(`/agent-tasks/${encodeURIComponent(taskId)}/intents`, {
+      method: 'POST',
+      body: JSON.stringify({ summary: payload.summary, goalId: payload.goalId || null, priority: payload.priority ?? 5 }),
+    }),
+  runMission: (taskId: string) =>
+    request<Record<string, unknown>>(`/agent-tasks/${encodeURIComponent(taskId)}/run`, {
+      method: 'POST',
+    }),
+  cancelMission: (taskId: string, reason = '用户手动取消') =>
+    request<MissionTaskOut>(`/agent-tasks/${encodeURIComponent(taskId)}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
+  proveMissionGoal: (taskId: string, goalId: string, evidence: string) =>
+    request<MissionGoalOut>(
+      `/agent-tasks/${encodeURIComponent(taskId)}/goals/${encodeURIComponent(goalId)}/prove`,
+      { method: 'POST', body: JSON.stringify({ evidence }) },
+    ),
+  finishMissionIntent: (taskId: string, intentId: string, status: string, result: string) =>
+    request<MissionIntentOut>(
+      `/agent-tasks/${encodeURIComponent(taskId)}/intents/${encodeURIComponent(intentId)}/finish`,
+      { method: 'POST', body: JSON.stringify({ status, result }) },
+    ),
+  getMissionReport: (taskId: string) =>
+    request<Record<string, unknown>>(`/agent-tasks/${encodeURIComponent(taskId)}/report`),
 }

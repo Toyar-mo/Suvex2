@@ -3833,6 +3833,14 @@ def _system_prompt_for(
     #   文本协议模式下它还是模型唯一能看到的工具清单。
     if mcp_catalog is not None:
         prompt += mcp_catalog.prompt_section()
+
+    # Suvex 2.1：注入会话绑定的 AgentProfile 职责与能力边界说明
+    if db is not None and getattr(session, "agent_profile_id", None):
+        from app.chat.profile_runtime import resolve_session_profile_runtime
+
+        runtime = resolve_session_profile_runtime(db, session)
+        if runtime.prompt_section:
+            prompt += runtime.prompt_section
     return prompt
 
 
@@ -3951,10 +3959,16 @@ async def run_turn(
     if gateway is None:
         gateway = _build_gateway(_resolve_provider(session, provider_id), db)
 
+    # Suvex 2.1：解析会话绑定的 AgentProfile，将角色画像声明的工具白名单接入执行器
+    from app.chat.profile_runtime import resolve_session_profile_runtime
+
+    profile_runtime = resolve_session_profile_runtime(db, session, allowed_tools)
+    effective_allowed_tools = profile_runtime.effective_allowed_tools
+
     # ★ v1.80：先发现本会话挂载的 MCP 工具，再渲染提示词 —— 提示词要把
     #   "已挂载但连不上"的 server 告诉模型（它会据此避免反复重试）。
     ctx = await _build_tool_context(
-        db, session, identity, gateway=gateway, allowed_tools=allowed_tools
+        db, session, identity, gateway=gateway, allowed_tools=effective_allowed_tools
     )
     native_tools = _gateway_supports_tools(gateway)
     challenge_category = _challenge_category(db, session)

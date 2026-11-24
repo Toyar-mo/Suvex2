@@ -262,6 +262,10 @@ class ChatSession(Base):
     #:   完全不同的事**，名字撞了纯属都叫"角色"。这个存的是"人格"。
     persona: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
+    #: Suvex 2.1：绑定的自定义/内置 AgentProfile id。非空时在执行引擎中生效，
+    #: 约束工具白名单并自动注入角色职责、推荐技能与 MCP 挂载。
+    agent_profile_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     #: 用哪个模型接入点。`None` = 用平台默认接入点。
     #:
     #: ★ 存 id 而不是快照 model 名：接入点被删了就该退回默认，
