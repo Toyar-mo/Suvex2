@@ -201,10 +201,10 @@ export function SettingsPage() {
           <Card className="p-5">
             <div className="flex items-center gap-2">
               <Layers className="h-4 w-4 text-accent" />
-              <h2 className="text-sm font-semibold text-ink">Suvex 2 演进模块（第二阶段迁移）</h2>
+              <h2 className="text-sm font-semibold text-ink">Suvex 2 全模块能力就绪</h2>
             </div>
             <p className="mt-1.5 text-xs leading-relaxed text-ink-secondary">
-              当前已交付完整核心主链路（总览、对话、扫描、实时活动流、漏洞处置、CTF 夺旗、模型与设置）。后续将按 Editorial Studio 规范陆续迁移以下扩展模块：
+              全部 19 个工作台模块已完成 Editorial Studio 独立架构重构与全链路接入，可通过左侧分组导航或 <code className="font-mono">⌘K</code> 快速切换。
             </p>
             <div className="mt-3 flex flex-wrap gap-1.5">
               {[
@@ -213,12 +213,19 @@ export function SettingsPage() {
                 '应急响应（IR）',
                 '交付报告中心',
                 '凭据库',
+                '文件管理',
                 '工具与 MCP 管理',
                 '技能库编辑器',
+                'Agent 角色',
                 '审批审计日志',
                 '内网立足点台账',
               ].map((mod) => (
-                <Badge key={mod}>{mod}</Badge>
+                <Badge
+                  key={mod}
+                  className="border-emerald-200 bg-emerald-50/70 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-300"
+                >
+                  {mod}
+                </Badge>
               ))}
             </div>
           </Card>

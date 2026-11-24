@@ -6,18 +6,14 @@ Suvex 2 是 [Suvex](https://github.com/Toyar-mo/Suvex) 的第二代演进版本�
 
 ---
 
-## 第一阶段升级亮点
+## 已完成前端全模块重构（19 个工作台页面）
 
-- **全新 Editorial Studio 视觉体系**：默认清爽瓷白 / 暖石浅色工作台（支持一键切换深色工作室模式），本地打包 Geist / Noto Sans SC / JetBrains Mono 字体，克制的层次与等宽数字遥测排版。
-- **从零新建独立前端工程（React 19 + TypeScript + Vite + Tailwind CSS）**：
-  - **着陆页 (`/`) & 鉴权页 (`/login`, `/setup`)**：自动探测实例初始化与会话状态，严格校验强口令规则。
-  - **全局态势总览 (`/overview`)**：行为流优先布局，实时活动流 + 综合风险指数 + 待关注事项 + 累积统计。
-  - **对话工作台 (`/chat`)**：全视口分栏会话管理、SSE 逐 token 流式输出、可折叠思考过程、结构化工具调用卡、高危工具人工审批、运行中插话纠偏与附件上传。
-  - **扫描任务 (`/scans`)**：支持 Web / Git 仓库 / 本地路径 / 裸 TCP 服务 / 纯附件五类目标，三档成功判据（`findVulns` / `captureFlag` / `verifyFix`），强制逐字授权声明留痕、附件暂存、人工线索注入与题解报告预览。
-  - **智能体实时活动流 (`/activity`)**：先拉历史种子再建 SSE 订阅（带 `lastEventId` 游标），实时协作智能体编制与载荷检视。
-  - **漏洞发现与处置 (`/findings`)**：证据强度（PoC 确证 / 启发式线索）与处置状态双轴解耦，支持 PoC 一键复制、修复步骤与 SARIF / JSON 导出。
-  - **CTF 夺旗工作台 (`/ctf`)**：赛题平台绑定、一键同步与单题拉取、自动解题队列、直连题目对话、Flag 校验与 Writeup 渲染。
-  - **模型接入 (`/models`) & 系统设置 (`/settings`)**：大模型 Provider 增删改与连通性测活、实例深度自检、沙箱配额、API 令牌签发与口令管理。
+- **全新 Editorial Studio 视觉体系**：默认清爽瓷白 / 暖石浅色工作台（支持一键切换深色工作室模式），本地打包 Geist / Noto Sans SC / JetBrains Mono 字体，克制的层次与等宽数字遥测排版，配 `⌘K` 全局命令面板。
+- **运行与交互**：总览 (`/overview`)、对话工作台 (`/chat`)、扫描任务 (`/scans`)、智能体实时活动流 (`/activity`)、内网会话台账 (`/intranet`)。
+- **资产与产出**：漏洞发现与处置 (`/findings`)、资产覆盖总览 (`/assets`)、交付报告中心 (`/reports`)、凭据库 (`/credentials`)、文件管理 (`/files`)。
+- **自动化与专项**：CTF 夺旗工作台 (`/ctf`)、应急响应复盘 (`/ir`)、定时复查计划 (`/schedules`)。
+- **能力与治理**：工具与 MCP 管理 (`/tools`)、技能库编辑器 (`/skills`)、Agent 角色管理 (`/agents`)、审批记录 (`/approvals`)、模型接入 (`/models`)、系统设置 (`/settings`)。
+- **着陆与鉴权**：品牌着陆页 (`/`)、首次管理员初始化 (`/setup`)、会话登录 (`/login`)。
 - **独立隔离部署（Kali VM `192.168.44.128`）**：
   - 目录：`/opt/suvex2`
   - PostgreSQL：`suvex2-db` (`127.0.0.1:55434`)

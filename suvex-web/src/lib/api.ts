@@ -1,17 +1,24 @@
 import type {
   ActivityEventOut,
   AgentOut,
+  AgentProfileOut,
   ApiErrorBody,
   ApiTokenOut,
+  AssetListOut,
   AuthState,
+  ChatApprovalOut,
   ChatAttachmentOut,
   ChatContextOut,
+  ChatFileListOut,
   ChatMessageOut,
   ChatPersonaOut,
   ChatSessionDetailOut,
   ChatSessionOut,
   ChatTodoOut,
   ChatTurnRunOut,
+  CoverageOut,
+  CredentialCreatePayload,
+  CredentialOut,
   DeepCheckOut,
   FindingOut,
   FindingStatsOut,
@@ -19,24 +26,44 @@ import type {
   FindingSummaryOut,
   HealthOut,
   HintOut,
+  IntranetKind,
+  IntranetSessionOut,
+  IntranetStatus,
   KernelAccountOut,
   KernelChallengeOut,
   KernelCompetitionOut,
   KernelQueueOut,
+  KernelRecipesOut,
+  KernelSkillsOut,
+  KernelToolProbeOut,
+  KernelToolsOut,
   KernelUsageSummary,
+  KernelWorkOrderOut,
   KernelWriteupOut,
+  McpServerIn,
+  McpServerOut,
+  McpServerTestOut,
   OverviewOut,
   ProviderCreatePayload,
   ProviderOut,
   ProviderVerifyResult,
   RecentEventsOut,
   RemediationOut,
+  ReportDocumentOut,
+  ReportOptions,
+  ReportOut,
+  ReusePlanOut,
   SandboxHealthOut,
   SandboxOut,
   ScanCreatePayload,
   ScanOut,
   ScanStatsOut,
+  ScheduleCreatePayload,
+  ScheduleListOut,
+  ScheduleOut,
   SettingsSnapshotOut,
+  SkillDetailOut,
+  SkillUsageListOut,
   StagedAttachmentsOut,
   UserEnvelope,
   UserOut,
@@ -531,4 +558,163 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ current, next, confirm }),
     }),
+
+  /* Phase 2: Assets */
+  listAssets: (limit = 200) => request<AssetListOut>(`/assets${qs({ limit })}`),
+  getAssetCoverage: (target: string) => request<CoverageOut>(`/assets/coverage${qs({ target })}`),
+
+  /* Phase 2: Schedules */
+  listSchedules: () => request<ScheduleListOut>('/schedules'),
+  createSchedule: (payload: ScheduleCreatePayload) =>
+    request<ScheduleOut>('/schedules', { method: 'POST', body: JSON.stringify(payload) }),
+  toggleSchedule: (scheduleId: string, enabled: boolean) =>
+    request<ScheduleOut>(`/schedules/${encodeURIComponent(scheduleId)}/enabled`, {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    }),
+  deleteSchedule: (scheduleId: string) =>
+    request<void>(`/schedules/${encodeURIComponent(scheduleId)}`, { method: 'DELETE' }),
+
+  /* Phase 2: Reports */
+  listReports: () => request<ReportOut[]>('/reports'),
+  createReport: (payload: {
+    title: string
+    scope: { kind: 'scan' | 'target'; scanId?: string; target?: string }
+    options: ReportOptions
+    format: 'markdown' | 'pdf'
+  }) => request<ReportOut>('/reports', { method: 'POST', body: JSON.stringify(payload) }),
+  getReportDocument: (reportId: string) =>
+    request<ReportDocumentOut>(`/reports/${encodeURIComponent(reportId)}/document`),
+  getReportDownloadUrl: (reportId: string) =>
+    `${API_BASE}/reports/${encodeURIComponent(reportId)}/download`,
+  deleteReport: (reportId: string) =>
+    request<void>(`/reports/${encodeURIComponent(reportId)}`, { method: 'DELETE' }),
+
+  /* Phase 2: Credentials */
+  listCredentials: (params?: { target?: string; scanId?: string }) =>
+    request<CredentialOut[]>(`/credentials${qs(params || {})}`),
+  createCredential: (payload: CredentialCreatePayload) =>
+    request<CredentialOut>('/credentials', { method: 'POST', body: JSON.stringify(payload) }),
+  revealCredential: (credentialId: string) =>
+    request<{ secret: string }>(`/credentials/${encodeURIComponent(credentialId)}/reveal`, {
+      method: 'POST',
+    }),
+  getCredentialReusePlan: (credentialId: string) =>
+    request<ReusePlanOut>(`/credentials/${encodeURIComponent(credentialId)}/reuse-plan`),
+  deleteCredential: (credentialId: string) =>
+    request<void>(`/credentials/${encodeURIComponent(credentialId)}`, { method: 'DELETE' }),
+
+  /* Phase 2: Files */
+  listChatFiles: (params?: { name?: string; sessionId?: string }) =>
+    request<ChatFileListOut>(`/chat/files${qs(params || {})}`),
+  getChatFileDownloadUrl: (sessionId: string, filePath: string) =>
+    `${API_BASE}/chat/sessions/${encodeURIComponent(sessionId)}/files/download${qs({ path: filePath })}`,
+  deleteChatFile: (sessionId: string, filePath: string) =>
+    request<void>(`/chat/sessions/${encodeURIComponent(sessionId)}/files${qs({ path: filePath })}`, {
+      method: 'DELETE',
+    }),
+
+  /* Phase 2: Intranet Sessions */
+  listIntranetSessions: () => request<IntranetSessionOut[]>('/intranet/sessions'),
+  createIntranetSession: (payload: {
+    kind: IntranetKind
+    host: string
+    username: string
+    secret: string
+    notes: string
+    status: IntranetStatus
+  }) => request<IntranetSessionOut>('/intranet/sessions', { method: 'POST', body: JSON.stringify(payload) }),
+  updateIntranetSession: (
+    sessionId: string,
+    payload: { status?: IntranetStatus; notes?: string; username?: string },
+  ) =>
+    request<IntranetSessionOut>(`/intranet/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  deleteIntranetSession: (sessionId: string) =>
+    request<void>(`/intranet/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }),
+
+  /* Phase 2: Incident Response */
+  createIrTask: (payload: { title: string; brief: string; attachmentStagingId?: string | null }) =>
+    request<{ challenge: KernelChallengeOut; attachments: Array<Record<string, unknown>>; notice: string | null }>(
+      '/kernel/ir/tasks',
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+  getChallengeWorkOrder: (challengeId: string) =>
+    request<KernelWorkOrderOut>(`/kernel/challenges/${encodeURIComponent(challengeId)}/workorder`),
+
+  /* Phase 2: Tools, MCP, Recipes */
+  getKernelTools: () => request<KernelToolsOut>('/kernel/tools'),
+  saveKernelDisabledTools: (disabled: string[]) =>
+    request<KernelToolsOut>('/kernel/tools', {
+      method: 'PUT',
+      body: JSON.stringify({ disabled }),
+    }),
+  getMcpServers: () => request<{ servers: McpServerOut[] }>('/kernel/mcp-servers'),
+  saveMcpServers: (servers: McpServerIn[]) =>
+    request<{ servers: McpServerOut[] }>('/kernel/mcp-servers', {
+      method: 'PUT',
+      body: JSON.stringify({ servers }),
+    }),
+  testMcpServer: (server: McpServerIn) =>
+    request<McpServerTestOut>('/kernel/mcp-servers/test', {
+      method: 'POST',
+      body: JSON.stringify({ server }),
+    }),
+  getKernelRecipes: () => request<KernelRecipesOut>('/kernel/recipes'),
+  probeKernelRecipes: (names?: string[]) =>
+    request<{ results: KernelToolProbeOut[]; image: string; probedAt: string | null }>(
+      '/kernel/recipes/probe',
+      { method: 'POST', body: JSON.stringify({ names: names || null }) },
+    ),
+
+  /* Phase 2: Skills */
+  listSkills: () => request<KernelSkillsOut>('/kernel/skills'),
+  getSkillsUsage: () => request<SkillUsageListOut>('/kernel/skills/usage'),
+  getSkill: (name: string) => request<SkillDetailOut>(`/kernel/skills/${encodeURIComponent(name)}`),
+  createSkill: (payload: { name: string; category: string; description: string; body: string }) =>
+    request<SkillDetailOut>('/kernel/skills', {
+      method: 'POST',
+      body: JSON.stringify({ ...payload, files: {} }),
+    }),
+  updateSkill: (name: string, payload: { description: string; body: string }) =>
+    request<SkillDetailOut>(`/kernel/skills/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ ...payload, files: null }),
+    }),
+  deleteSkill: (name: string) =>
+    request<void>(`/kernel/skills/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+
+  /* Phase 2: Agents */
+  listAgentProfiles: () => request<AgentProfileOut[]>('/agents'),
+  createAgentProfile: (payload: {
+    key: string
+    name: string
+    description: string
+    mcpServers: string[]
+    skills: string[]
+    tools: string[]
+  }) => request<AgentProfileOut>('/agents', { method: 'POST', body: JSON.stringify(payload) }),
+  updateAgentProfile: (
+    profileId: string,
+    payload: {
+      name?: string
+      description?: string
+      enabled?: boolean
+      mcpServers?: string[]
+      skills?: string[]
+      tools?: string[]
+    },
+  ) =>
+    request<AgentProfileOut>(`/agents/${encodeURIComponent(profileId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  deleteAgentProfile: (profileId: string) =>
+    request<void>(`/agents/${encodeURIComponent(profileId)}`, { method: 'DELETE' }),
+
+  /* Phase 2: Approvals */
+  listApprovals: (status?: string, limit = 100) =>
+    request<ChatApprovalOut[]>(`/chat/approvals${qs({ status, limit })}`),
 }

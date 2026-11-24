@@ -538,3 +538,373 @@ export interface SettingsSnapshotOut {
   sandbox: SandboxOut
   tokens: ApiTokenOut[]
 }
+
+/* ==========================================================================
+   Phase 2 Domain Types
+   ========================================================================== */
+
+/* Assets & Attack Surface */
+export interface AssetOut {
+  target: string
+  scanCount: number
+  lastScanAt: string | null
+  lastScanStatus: string | null
+  lastCompletedAt: string | null
+  consecutiveFailures: number
+  findingCount: number
+  openFindingCount: number
+  openCritical: number
+  openHigh: number
+  bySeverity: Record<string, number>
+}
+
+export interface AssetSummaryOut {
+  targetCount: number
+  findingCount: number
+  openFindingCount: number
+  targetsWithOpenHigh: number
+  neverScanned: number
+  neverCompleted: number
+  generatedAt: string
+}
+
+export interface AssetListOut {
+  items: AssetOut[]
+  total: number
+  truncated: boolean
+  summary: AssetSummaryOut
+}
+
+export interface CoverageItemOut {
+  factKey: string
+  summary: string
+  detail: string
+  confidence: string
+  trustLevel: string
+  recordedBy: string
+  updatedAt: string
+  version: number
+}
+
+export interface CoverageGapOut {
+  key: string
+  label: string
+  recorded: boolean
+  matches: string[]
+}
+
+export interface CoverageOut {
+  target: string
+  tested: CoverageItemOut[]
+  ruledOut: CoverageItemOut[]
+  gaps: CoverageGapOut[]
+  truncated: boolean
+  stats: { tested: number; ruledOut: number }
+}
+
+/* Schedules */
+export interface ScheduleOut {
+  id: string
+  name: string
+  target: string
+  targetKind: TargetKind
+  goal: ScanGoal
+  intervalMinutes: number
+  enabled: boolean
+  nextRunAt: string | null
+  lastScanId: string | null
+  lastRunAt: string | null
+  failureCount: number
+  lastFailureReason: string | null
+  providerId: string
+  providerLabel: string | null
+  skills: SkillId[]
+  brief: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ScheduleListOut {
+  items: ScheduleOut[]
+  total: number
+  dueCount: number
+}
+
+export interface ScheduleCreatePayload {
+  name: string
+  target: string
+  targetKind: TargetKind
+  goal: ScanGoal
+  intervalMinutes: number
+  providerId: string
+  skills: SkillId[]
+  brief?: string | null
+  authorizationStatement: string
+}
+
+/* Reports */
+export interface ReportOptions {
+  includePoc: boolean
+  includeReasoning: boolean
+  onlyConfirmed: boolean
+  includeRemediation: boolean
+}
+
+export interface ReportOut {
+  id: string
+  title: string
+  scope: Record<string, unknown>
+  options: ReportOptions
+  createdAt: string
+  findingCount: number
+  excludedCount: number
+  severityCounts: Record<string, number>
+  format: 'pdf' | 'markdown'
+  findingIds: string[]
+  code: string
+}
+
+export interface ReportDocumentOut {
+  meta: Record<string, unknown>
+  verdict: string
+  stats: Record<string, unknown>
+  distribution: Array<Record<string, unknown>>
+  entries: Array<Record<string, unknown>>
+  method: Record<string, unknown>
+  severityDefinitions: Array<Record<string, unknown>>
+}
+
+/* Credentials */
+export interface CredentialOut {
+  id: string
+  kind: string
+  username: string
+  target: string
+  scanId: string | null
+  findingId: string | null
+  source: string
+  notes: string
+  createdAt: string
+  hasSecret: boolean
+}
+
+export interface CredentialCreatePayload {
+  kind: string
+  username: string
+  secret: string
+  target: string
+  source?: string
+  notes?: string
+}
+
+export interface ReusePlanOut {
+  score: number
+  basis: string[]
+  sameTarget: number
+  sameHost: number
+  sameScan: number
+}
+
+/* Files */
+export interface ChatFileItemOut {
+  sessionId: string
+  sessionTitle: string
+  project: string | null
+  source: string
+  path: string
+  name: string
+  sizeBytes: number
+  modifiedAt: number
+}
+
+export interface ChatFileListOut {
+  items: ChatFileItemOut[]
+  truncated: boolean
+  limit: number
+}
+
+/* Intranet Sessions */
+export type IntranetKind = 'webshell' | 'reverse' | 'ssh'
+export type IntranetStatus = 'alive' | 'dead' | 'unknown'
+
+export interface IntranetSessionOut {
+  id: string
+  kind: IntranetKind
+  host: string
+  username: string
+  status: IntranetStatus
+  notes: string
+  createdBy: string
+  createdAt: string
+  updatedAt: string
+  hasSecret: boolean
+}
+
+/* Tools, MCP, Recipes */
+export interface KernelToolOut {
+  name: string
+  label: string
+  group: string
+  summary: string
+  params: string
+  defaultLimitation: string
+  calls: number
+  lastCallAt: string | null
+  enabled: boolean
+  core: boolean
+  requiresConnection: string
+  ready: boolean
+  reason: string
+}
+
+export interface KernelToolsOut {
+  tools: KernelToolOut[]
+  groups: string[]
+  disabled: string[]
+  usageSampled: number
+  usageTruncated: boolean
+}
+
+export interface McpServerOut {
+  name: string
+  type: 'stdio' | 'http'
+  command: string
+  args: string[]
+  url: string
+  notes: string
+  allowedTools: string[] | null
+  hasEnv: boolean
+  hasHeaders: boolean
+  callTimeout: number | null
+}
+
+export interface McpServerIn {
+  name: string
+  type: 'stdio' | 'http'
+  command: string
+  args: string[]
+  env: Record<string, string>
+  url: string
+  headers: Record<string, string>
+  preserveEnv: boolean
+  preserveHeaders: boolean
+  notes: string
+  allowedTools: string[] | null
+  callTimeout: number | null
+}
+
+export interface McpServerTestOut {
+  ok: boolean
+  reason: string
+  tools: string[]
+  serverName: string
+  serverVersion: string
+  elapsedMs: number
+}
+
+export interface KernelToolProbeOut {
+  name: string
+  found: boolean
+  path: string
+  version: string
+  probedAt: string | null
+}
+
+export interface KernelRecipeOut {
+  name: string
+  summary: string
+  group: string
+  scenario: string
+  command: string
+  args: string[]
+  defaultLimitation: string
+  calls: number
+  lastCallAt: string | null
+  source: string
+  probe: KernelToolProbeOut | null
+}
+
+export interface KernelRecipesOut {
+  recipes: KernelRecipeOut[]
+  groups: string[]
+  total: number
+}
+
+/* Skills */
+export interface KernelSkillOut {
+  name: string
+  category: string
+  description: string
+  source: 'builtin' | 'custom' | string
+  fileCount: number
+}
+
+export interface KernelSkillCategoryOut {
+  category: string
+  skills: KernelSkillOut[]
+}
+
+export interface KernelSkillsOut {
+  total: number
+  categories: KernelSkillCategoryOut[]
+}
+
+export interface SkillDetailOut {
+  name: string
+  category: string
+  description: string
+  source: string
+  body: string
+  lineCount: number
+  files: string[]
+}
+
+export interface SkillUsageOut {
+  name: string
+  loads: number
+  lastLoadedAt: string | null
+}
+
+export interface SkillUsageListOut {
+  sampledEvents: number
+  truncated: boolean
+  items: SkillUsageOut[]
+}
+
+/* Agents */
+export interface AgentProfileOut {
+  id: string
+  key: string
+  name: string
+  description: string
+  builtin: boolean
+  kind: string
+  enabled: boolean
+  mcpServers: string[]
+  skills: string[]
+  tools: string[]
+  createdAt: string
+  updatedAt: string
+}
+
+/* Approvals */
+export interface ChatApprovalOut {
+  id: string
+  sessionId: string
+  sessionTitle: string
+  toolName: string
+  toolArgs: Record<string, unknown>
+  status: 'pending' | 'approved' | 'rejected' | string
+  decidedBy: string | null
+  decidedAt: string | null
+  createdAt: string
+}
+
+/* Incident Response */
+export interface KernelWorkOrderOut {
+  challengeId: string
+  title: string
+  markdown: string
+  filename: string
+  count: number
+}

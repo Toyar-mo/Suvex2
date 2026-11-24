@@ -14,6 +14,17 @@ import { FindingsPage } from '@/pages/FindingsPage'
 import { CtfPage } from '@/pages/CtfPage'
 import { ModelsPage } from '@/pages/ModelsPage'
 import { SettingsPage } from '@/pages/SettingsPage'
+import { AssetsPage } from '@/pages/AssetsPage'
+import { ReportsPage } from '@/pages/ReportsPage'
+import { CredentialsPage } from '@/pages/CredentialsPage'
+import { FilesPage } from '@/pages/FilesPage'
+import { IntranetPage } from '@/pages/IntranetPage'
+import { SchedulesPage } from '@/pages/SchedulesPage'
+import { IrPage } from '@/pages/IrPage'
+import { ToolsPage } from '@/pages/ToolsPage'
+import { SkillsPage } from '@/pages/SkillsPage'
+import { AgentsPage } from '@/pages/AgentsPage'
+import { ApprovalsPage } from '@/pages/ApprovalsPage'
 
 function ProtectedShell() {
   const { loading, initialized, user } = useAuth()
@@ -41,13 +52,31 @@ export function AppRoutes() {
       <Route path="/setup" element={<SetupPage />} />
 
       <Route element={<ProtectedShell />}>
+        {/* 运行与交互 */}
         <Route path="/overview" element={<OverviewPage />} />
         <Route path="/chat" element={<ChatPage />} />
         <Route path="/scans" element={<ScansPage />} />
         <Route path="/activity" element={<ActivityPage />} />
+        <Route path="/intranet" element={<IntranetPage />} />
+
+        {/* 资产与产出 */}
         <Route path="/findings" element={<FindingsPage />} />
+        <Route path="/assets" element={<AssetsPage />} />
+        <Route path="/reports" element={<ReportsPage />} />
+        <Route path="/credentials" element={<CredentialsPage />} />
+        <Route path="/files" element={<FilesPage />} />
+
+        {/* 自动化与专项 */}
         <Route path="/ctf" element={<CtfPage />} />
         <Route path="/kernel" element={<Navigate to="/ctf" replace />} />
+        <Route path="/ir" element={<IrPage />} />
+        <Route path="/schedules" element={<SchedulesPage />} />
+
+        {/* 能力与治理 */}
+        <Route path="/tools" element={<ToolsPage />} />
+        <Route path="/skills" element={<SkillsPage />} />
+        <Route path="/agents" element={<AgentsPage />} />
+        <Route path="/approvals" element={<ApprovalsPage />} />
         <Route path="/models" element={<ModelsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
       </Route>

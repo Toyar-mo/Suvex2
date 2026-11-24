@@ -6,10 +6,24 @@ import { AuthProvider } from '@/lib/auth'
 import { ThemeProvider } from '@/lib/theme'
 import { ToastProvider } from '@/lib/toast'
 import { checkPasswordStrength, formatDuration } from '@/lib/format'
+import { NAV_GROUPS, NAV_ITEMS } from '@/navigation'
 
 describe('Suvex 2 Editorial Studio Core', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+  })
+
+  it('registers all 19 workspace modules across 4 navigation groups', () => {
+    expect(NAV_GROUPS).toHaveLength(4)
+    expect(NAV_ITEMS).toHaveLength(19)
+    const paths = new Set(NAV_ITEMS.map((n) => n.path))
+    expect(paths.size).toBe(19)
+    expect(paths.has('/assets')).toBe(true)
+    expect(paths.has('/schedules')).toBe(true)
+    expect(paths.has('/ir')).toBe(true)
+    expect(paths.has('/tools')).toBe(true)
+    expect(paths.has('/skills')).toBe(true)
+    expect(paths.has('/approvals')).toBe(true)
   })
 
   it('validates password strength rules matching backend contract', () => {
