@@ -1,0 +1,32 @@
+[Unit]
+Description=Suvex 2 API (FastAPI + uvicorn, isolated instance on :8002)
+Documentation=https://github.com/Toyar-mo/Suvex2
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/suvex2/suvex-api
+EnvironmentFile=/etc/suvex2/api.env
+ExecStart=/bin/sh -c '\
+    /opt/suvex2/suvex-api/.venv/bin/python -m alembic -c /opt/suvex2/suvex-api/alembic.ini upgrade head && \
+    exec /opt/suvex2/suvex-api/.venv/bin/python -m uvicorn app.main:app \
+        --host 127.0.0.1 \
+        --port 8002 \
+        --proxy-headers \
+        --forwarded-allow-ips=127.0.0.1'
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=120
+LimitNOFILE=65536
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=suvex2-api
+NoNewPrivileges=true
+PrivateDevices=true
+
+[Install]
+WantedBy=multi-user.target

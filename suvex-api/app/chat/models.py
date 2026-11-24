@@ -1,0 +1,718 @@
+"""`chat_*` 领域（对话页，v0.93）。
+
+## 它解决的是什么问题
+
+平台已有的每一个入口都是**表单**：建扫描要填六个字段、改技能要开弹窗、
+加 MCP 要手写 command 与 args。表单适合「我已经知道自己要做什么」，
+不适合「我想先问一句」。
+
+这一页补的是后者：一个能听懂自然语言、并且**真的能把事做了**的对话。
+
+## ★ 为什么消息单独一张表，而不是把 transcript 塞进会话行
+
+会话行上的一个 JSON 列写起来最省事，但它有三条硬伤：
+
+* 一条消息都可能很长（工具输出被截断后仍有几千字），几百轮之后
+  单行会涨到 MB 级，而**每次读会话都要把它整个读出来**；
+* 无法分页 —— 「只看最近 50 条」需要把全部读进内存再切；
+* 无法按消息做查询（比如「这个会话里调过哪些工具」）。
+
+所以拆成 `chat_messages`，会话行只留元信息。
+
+## ★ 为什么 `seq` 是必需的，为什么不用时间戳排序
+
+`core/columns.py:27` 已经记过这件事：同一事务里多条记录的
+`now_utc()` 会拿到**完全相同的值**（默认值由应用层给，而是在同一帧里取的）。
+一轮对话可能同时落一条 assistant 消息 + 若干条 tool 消息，
+它们的时间戳会撞在一起，于是 `ORDER BY created_at` 的顺序是**未定义**的 ——
+表现是「工具结果偶尔跑到提问前面」。
+
+`seq` 是会话内单调递增的整数，由应用层在插入时按会话加锁取下一个值。
+排序只认它。
+
+## ★ 为什么设置挂在会话行上、而不是「对话内改设置」的独立表
+
+v0.93 的初版这里写着「这一版明确不做，所以模型里也没有对应的东西」。
+v0.94 做了，但做法是**会话行上加列**，不是建 settings 表 —— 理由见
+`project` / `persona` 那几个字段上方的注释：六列标量、每轮必读，
+独立表只换来"加列时好看一点"，代价是每轮多一次 JOIN。
+
+仍然不做的：**让模型改自己的设置**（`providerId` / `persona` 只能由
+用户在界面上改）。模型能改自己的接入点意味着它能把自己换到一个更
+听话的模型上去，那是这条边界存在的全部理由。
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.core.columns import JsonColumn, UtcDateTime
+from app.core.db import Base
+from app.core.timeutil import now_utc
+
+#: 角色。只有三种 —— 工具结果并进 `tool` 角色，而不是再拆一个
+#: 「工具请求」与「工具结果」两种。理由见下面 `ChatMessage.content` 的注释。
+CHAT_ROLES = ("user", "assistant", "tool")
+
+#: 一条消息正文的最大长度。超过就截断（不是拒绝）。
+#:
+#: 为什么截断而不是拒绝：工具输出可能真的很大（一次 `nmap` 的输出），
+#: 而"因为输出太长所以这一轮对话失败"是不可接受的 —— 用户没做错任何事。
+#: 截断点保留**头部**（与 `run_shell` 的截断口径一致，见 runner.py 里
+#: 那条「只留头」的修复）。
+MAX_MESSAGE_CHARS = 60_000
+
+#: 会话标题的最大长度。标题是自动从首条提问生成的，超长就截。
+MAX_TITLE_CHARS = 80
+
+#: 工具名的最大长度。**必须等于** `ChatMessage.tool_name` 列的宽度
+#: （`String(64)`）；写入前在 `service._append` 里按它截断。
+#:
+#: ★ 为什么要有这个常量（v1.44，线上实测 2026-11-01）：模型会把一整串
+#:   工具清单塞进 `ACTION: {"tool": "<一长串逗号分隔的工具名>"}`，那句
+#:   `tool` 值被当成 `tool_name` 落库时超出 `varchar(64)` —— Postgres 抛
+#:   `StringDataRightTruncation`，整轮 500、被后台 resumer 反复接手（截图上
+#:   「166 步 · 66 个工具」一直在循环，turn_run 的 last_error 就是这条）。
+#:   未知/超长工具名本身应当是**一条干净的"没有叫 X 的工具"结果**，不该炸库。
+MAX_TOOL_NAME_CHARS = 64
+
+#: 角色（人格）id 的合法取值。
+#:
+#: ★ 与 `CHAT_ROLES`（消息角色 `user`/`assistant`/`tool`）**毫无关系**，
+#:   纯属中文都译作"角色"。这一组是「这个对话里模型扮演谁」。
+#:   定义在这里而不是 `prompts.py`，因为它要被写进 CHECK 约束 ——
+#:   而 CHECK 约束的那份列表必须是**数据库层**也认的。
+#:   `prompts.py` 里有一条断言钉住"两处必须同一组"。
+CHAT_PERSONAS = (
+    "goals",
+    "planner",
+    "mainagent",
+    "worker",
+    "worker.intranet",
+    "auto",
+    "pentest",
+    "reporter",
+    "retester",
+    "verifier",
+)
+
+#: 归属项目名的最大长度。够放中文项目名（20 个汉字），也够放英文长名。
+MAX_PROJECT_CHARS = 64
+
+#: 人工审批的状态取值。
+#:
+#: `pending` 是唯一"还没结束"的状态 —— 它意味着那条工具消息**还没执行过**。
+#: `approved` / `rejected` 都是终态：前者执行过（结果在 `content` 里），
+#: 后者没执行（`content` 里写着为什么没做）。
+APPROVAL_STATUSES = ("pending", "approved", "rejected")
+
+
+class ChatSession(Base):
+    """一次对话。"""
+
+    __tablename__ = "chat_sessions"
+    __table_args__ = (
+        # 列表页的唯一热查询：某人的会话，按更新时间倒序。
+        Index("ix_chat_sessions_owner_updated", "created_by", "updated_at"),
+        # 归档的会话默认不出现，但要能捞回来。
+        Index("ix_chat_sessions_archived", "archived_at"),
+        # ★ persona 的合法值在**数据库层**也钉一遍，不只是 pydantic。
+        #
+        #   理由与 `chat_message_role_valid` 完全一致：pydantic 只挡 HTTP
+        #   入口。这条也挡得住"迁移脚本写错一个值"、"手工 UPDATE 写错"
+        #   这类没有经过 API 的写入 —— 而那种值一旦进库，`prompts.py`
+        #   查不到对应人格时会静默退回默认，界面上看起来一切正常。
+        #   `persona IS NULL` 必须放行：NULL 是"默认人格"，不是非法值。
+        CheckConstraint(
+            "persona IS NULL OR persona IN "
+            f"({', '.join(repr(p) for p in CHAT_PERSONAS)})",
+            name="chat_session_persona_valid",
+        ),
+        # 侧栏按项目分组列会话。见迁移 `e8f3c2a71b54` 里那一节：
+        # 它主要不是为了性能，而是让同名项目的分组有确定顺序。
+        #
+        # ★ 这行**必须**与迁移里 `create_index` 那一段同时存在。
+        #   只在迁移里建、不在模型里声明，会让 `alembic check` 永远想
+        #   生成一条 `remove_index` —— 一条永远清不掉的噪音 diff，
+        #   会训练人忽略 autogenerate 的输出。（这次正是这么发现的。）
+        Index("ix_chat_sessions_owner_project", "created_by", "project"),
+        # ★ 看板「查看」要找回"这道题的那个会话"，判据是 (created_by, challenge_id)。
+        #   不加索引时那是一张全表扫 —— 现在几百条看不出来，几千条就是每次点击
+        #   都慢一拍。
+        Index("ix_chat_sessions_owner_challenge", "created_by", "challenge_id"),
+        Index("ix_chat_sessions_agent_task", "agent_task_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    #: 自动生成的标题（取首条 user 消息前 80 字）。
+    #: ⚠️ 它可以被用户改名，所以**不能**用来推导任何逻辑。
+    title: Mapped[str] = mapped_column(String(MAX_TITLE_CHARS), nullable=False, default="")
+
+    #: 创建者。与其它领域的 `created_by` 同一口径（存 username，不做外键 ——
+    #: 账号被删后历史记录仍要能回答"这是谁建的"）。
+    created_by: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    #: 执行图任务 id。worker/planner 会话带上它，scope 守卫据此使用任务范围；
+    #: 普通聊天为 NULL。
+    agent_task_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    #: 软归档。**不物理删除**：对话里可能有"我是怎么定位到这个漏洞的"这种
+    #: 事后价值极高的记录，而删掉是不可逆的。归档 = 从默认列表里消失。
+    archived_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+
+    #: 置顶时刻。`None` = 没置顶。
+    #:
+    #: ★ 为什么存时刻而不是一个 `pinned bool`：
+    #:   置顶多条时需要**它们之间**的顺序。用 bool 就只能拿 `updated_at`
+    #:   兜底，而 `updated_at` 会因为"又聊了两句"而变 —— 用户置顶的三条
+    #:   会自己换位置。存时刻则「最近置顶的在上」是确定的，且不需要第二列。
+    #:   撤销置顶就是写回 `NULL`。
+    pinned_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, nullable=False, default=now_utc, onupdate=now_utc
+    )
+
+    #: 消息数。冗余但必要：列表页要显示"12 条"，而为一个数字
+    #: 对每个会话跑一次 COUNT 是 N+1。
+    #: ⚠️ 它必须由写消息的那一处同步维护，不能指望它自愈。
+    #:
+    #: `server_default="0"` 必须与迁移 `d4e8b2f6a1c9` 里的声明一致。
+    #: 只在迁移里写、模型里漏掉，`alembic check` 就会永远想生成一条
+    #: `modify_default` —— 与上面那个索引是同一类漂移。
+    message_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
+    # ── 以下是 v0.94 的「对话设置」六列 ──────────────────────────
+    #
+    # ★ 为什么这些设置挂在**会话**上而不是每条消息上：
+    #   用户在侧栏里切了一个「角色」，他的意思是「这个对话接下来都按
+    #   这个角色说」，而不是「这一句按新角色、下一句按旧的」。挂消息上
+    #   会让同一个对话的上下文在角色之间反复横跳，而模型看到的 system
+    #   提示词每轮都变 —— 那既贵又会让它自己都糊涂。
+    #
+    # ★ 为什么不给它们建一张 `chat_session_settings` 表：
+    #   六列全是标量/短列表，且**每个会话必读**（跑一轮就要全部拿到）。
+    #   独立表意味着每轮多一次 JOIN 或一次额外 SELECT，收益只有"加列的
+    #   时候好看一点"。等到真的出现「一个会话多条设置历史」这种需求再拆。
+
+    #: 归属的项目名。`None` = 未归属（侧栏归到「无项目」）。
+    #:
+    #: ★ 存**名字**而不是 project_id：项目是给用户分组用的便签，
+    #:   改个名不该让历史对话从分组里掉出去。而真建一张 projects 表
+    #:   就要处理"删项目时那些对话怎么办"，那是与这一页无关的复杂度。
+    project: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    #: 关联的 CTF 题目 id。`None` = 普通对话。
+    #:
+    #: ★ 为什么关联的是**题目**而不是"看板上的那一行"：一道题只有一个
+    #:   会话（`get_or_create_challenge_session` 按它去重），这样"点查看"
+    #:   永远回到同一条时间线，而不是每点一次多出一个空对话。
+    #:
+    #: ⚠️ 不建外键：题目被删（重新同步、换接入）时，这段对话仍然是有价值
+    #:   的历史记录，不该跟着级联消失。悬空 id 的表现是题目条上的"题目已
+    #:   不存在"，那是看得见的。
+    challenge_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    #: 子代理会话的父会话。`None` = 顶层会话。
+    #:
+    #: ★ v1.87：子代理不再当作顶层会话堆在侧栏，而是挂在父会话下面。
+    #:   自引用外键 + CASCADE：父会话被删，子代理会话一起删。
+    parent_session_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+
+    #: 从哪个会话的哪条消息分叉出来（v1.92）。
+    #:
+    #: ## 为什么不用 `parent_session_id`
+    #:
+    #: 那是**子代理**的父子关系：侧栏把它画成缩进分支，Agent Hub 把直接
+    #: 子会话当子代理列出来。分叉是"在同一段历史上另开一条时间线"，不是
+    #: 委派任务 —— 混用会让用户的分支出现在子代理名册里，语义直接错。
+    #:
+    #: 不建外键：源会话被彻底删除后，分支仍应保留并可继续，只是"来自
+    #: 哪里"变成一条历史事实。
+    forked_from_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: 分叉点（源会话的 seq，含）。`None` = 整段复制。
+    forked_from_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: 被放弃分支的结构化摘要（分叉时生成）。同时会作为 process 消息注入。
+    branch_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    #: 角色（persona）id。见 `prompts.CHAT_ROLES`。`None` = 默认角色。
+    #: ⚠️ 与 `models.CHAT_ROLES`（消息角色 user/assistant/tool）是**两件
+    #:   完全不同的事**，名字撞了纯属都叫"角色"。这个存的是"人格"。
+    persona: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    #: 用哪个模型接入点。`None` = 用平台默认接入点。
+    #:
+    #: ★ 存 id 而不是快照 model 名：接入点被删了就该退回默认，
+    #:   而不是拿一个已经不存在的 model 去请求。
+    provider_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    #: 是否要求人工审批有副作用的操作（`create_scan` / `save_skill` /
+    #: `delete_skill` / `add_mcp_server` / `start_ctf_solve`）。
+    #:
+    #: ★ 默认 `False`（关闭）：这是给「我要盯着它一步一步做」的场景用的，
+    #:   默认打开会让每一次建扫描都要多点一次，用户很快就会去关掉它 ——
+    #:   而那之后就再也不开了。默认关、让在意的人自己开，比默认开、
+    #:   被所有人关掉更有用。
+    require_approval: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+
+    #: 自动放行截止时间（v1.83）。None = 关闭；非空 = 该时刻前跳过审批。
+    auto_approve_until: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+
+    #: 这个对话里额外挂载的技能名（会把它们的正文注入系统提示词）。
+    #:
+    #: ★ 与 `load_skill` 工具的区别：那个是模型**按需**读，这个是用户
+    #:   **预先**指定"这个对话就按这几篇方法论来"。前者靠模型判断该读什么，
+    #:   后者靠人判断 —— 有些流程人比模型清楚。
+    skill_names: Mapped[list | None] = mapped_column(JsonColumn, nullable=True)
+
+    #: 这个对话里额外挂载的 MCP 服务器名（来自 `settings.mcp_servers`）。
+    #:
+    #: ★ 存名字而不是存配置：配置的唯一真相是设置页那一列。这里存名字
+    #:   意味着"设置页删了某个 server，这个对话自动就不挂它了"，
+    #:   而不是留一份过期副本继续连。
+    mcp_server_names: Mapped[list | None] = mapped_column(JsonColumn, nullable=True)
+
+    messages: Mapped[list[ChatMessage]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="ChatMessage.seq",
+        lazy="selectin",
+    )
+
+    @property
+    def archived(self) -> bool:
+        """给 `ChatSessionOut.archived` 读的派生属性。
+
+        ★ 为什么要有它，而不是让 schema 直接读 `archivedAt`：
+          契约里给前端的字段是 `archived: bool`（前端只关心"在不在归档区"），
+          而库里存的是时刻。让前端自己判 `archivedAt !== null` 会把
+          「归档」的判据分散到每一个调用点 —— 将来若改成"归档 30 天后
+          自动清空"，前端那些判断就全错了，而且不会报错。
+        """
+        return self.archived_at is not None
+
+    @property
+    def pinned(self) -> bool:
+        """给 `ChatSessionOut.pinned` 读的派生属性。理由与 `archived` 同。"""
+        return self.pinned_at is not None
+
+    def __repr__(self) -> str:  # pragma: no cover - 调试用
+        return f"<ChatSession id={self.id!r} title={self.title!r} n={self.message_count}>"
+
+
+class ChatMessage(Base):
+    """会话里的一条消息。"""
+
+    __tablename__ = "chat_messages"
+    __table_args__ = (
+        # ★ 顺序的唯一依据。`(session_id, seq)` 唯一 —— 让"两条消息同一个序号"
+        #   从数据库层就不可能，而不是靠应用层小心翼翼。
+        UniqueConstraint("session_id", "seq", name="chat_message_session_seq"),
+        CheckConstraint(
+            f"role IN ({', '.join(repr(r) for r in CHAT_ROLES)})",
+            name="chat_message_role_valid",
+        ),
+        # ★ 审批状态只允许三种值。写死而不是放过：一个拼错的状态值
+        #   会让界面上那条消息**永远显示"等待确认"而没人能点** ——
+        #   用户以为对话卡住了，刷新也没用。
+        CheckConstraint(
+            "approval_status IS NULL OR approval_status IN "
+            f"({', '.join(repr(s) for s in APPROVAL_STATUSES)})",
+            name="chat_message_approval_status_valid",
+        ),
+        # 读一个会话的全部消息：`WHERE session_id = ? ORDER BY seq`
+        Index("ix_chat_messages_session_seq", "session_id", "seq"),
+        # 进会话时找"有没有挂着的确认"。
+        # ★ 部分索引：只索引 pending 的行。绝大多数消息 approval_status
+        #   是 NULL，全列索引会大得没道理，而这条查询只关心 pending。
+        Index(
+            "ix_chat_messages_pending_approval",
+            "session_id",
+            postgresql_where=text("approval_status = 'pending'"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        String(64),
+        # 会话被物理删除时消息跟着走。★ 但正常的删除路径是归档
+        # （`ChatSession.archived_at`），这里的 cascade 只是给
+        # 测试清理与"用户明确要求彻底删"用的兜底。
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    #: 会话内单调递增。见模块 docstring「为什么要 seq」。
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    #: 工具卡耗时（毫秒）。`role='tool'` 时才有值；NULL = 老数据/未计时。
+    #:
+    #: ## 为什么后端记，而不是前端按相邻消息时间差算
+    #:
+    #: 相邻两条消息的 `created_at` 差 = 工具执行 + 模型下一段输出 + 落库排队。
+    #: 把它显示成"工具耗时"会让一个 0.2 秒的 `pwd` 看起来跑了 30 秒（模型
+    #: 下一轮推理的时间被算进去了），而这种失真没有任何信号提示。
+    #: 计时器必须包住 `_execute_tool` 本身。
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: 这条消息属于**哪一面**（v1.25）。
+    #:
+    #: - `answer`（默认）：用户可见的对话内容 —— 用户自己说的话、模型的最终答复。
+    #: - `process`：过程证据 —— 模型"我先把附件解出来"这类**边干边说**的旁白。
+    #:
+    #: ## 为什么要分开
+    #:
+    #: 用户原话：「又中断了，就不能一次性把 flag 给我解出来吗」+ 截图里一串
+    #: 小气泡（「我先看看附件里是什么。」「解出来的文件叫 pwn…」「这是 CTF 的
+    #: pwn 二进制，我拆开看逻辑。」）夹在工具行之间。那是**工作过程**，
+    #: 不是回答 —— 它把真正的结论挤到屏幕外，而且任何一句被截断都长得像
+    #: "它停在半路"。
+    #:
+    #: CyberStrikeAI 把这件事叫「过程面 / 交付面隔离」：只有过 final gate 的
+    #: 内容才写 `messages.content`，其余进 `process_details` 时间线。
+    #: 这里用同一原则的最小实现：`process` 的消息**保留在上下文里**（模型
+    #: 仍看得到自己之前说过什么），但界面上收进「过程详情」折叠块，不占气泡。
+    surface: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="answer", server_default="answer"
+    )
+
+    #: 正文。
+    #:
+    #: ★ `tool` 角色下它存的是**工具结果的文本**，而工具名与参数在
+    #:   `tool_name` / `tool_args` 里。这样一条工具调用只占**一条**记录：
+    #:   请求与结果不会因为分两条而在中途被用户打断时错位。
+    #:   （把「调用」和「结果」拆成两条的模型在流式场景下很容易出现
+    #:    「有调用没结果」的半截记录，而界面必须为这种半截状态写专门分支。）
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    #: ★ v0.112：**只给模型看、不给用户看**的附加材料，可空。
+    #:
+    #: 目前的唯一来源是附件注入（`engine._render_attachments`）：附件正文、
+    #: 容器内真实路径、以及"用 binwalk / tcpdump 去分析"这类**我们写给
+    #: 模型的指令**。这些东西拼进 `content` 的后果是界面上看起来像用户
+    #: 自己打了一大段 —— 与 `_narration_before_action` 那条判例同一个形状
+    #: （内部协议进了用户视野，复核时无法判断某句话是模型说的还是系统拼的）。
+    #:
+    #: 组装模型上下文时由 `_render_history` 拼回 `content` 之后，所以模型
+    #: 看到的东西与以前逐字节一致；界面只渲染 `content`，于是那段材料
+    #: 从用户视野里消失。
+    #:
+    #: ★ `NULL` 与 `''` 语义不同：NULL = 没有注入材料（绝大多数消息）。
+    #:   读侧一律 `(row.model_extra or "")`，不写 `is NULL` 的特殊分支。
+    model_extra: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    #: 模型的推理段（`reasoning_content` / Anthropic thinking），可空。
+    #: 它**不**进下一轮上下文（见 service 里的说明），只用于展示。
+    reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    #: 工具名。`role == 'tool'` 时非空。
+    tool_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    #: 工具参数。存下来是为了界面能显示"它拿着什么参数去调的"，
+    #: 也是事后复核的唯一依据。
+    tool_args: Mapped[dict | None] = mapped_column(JsonColumn, nullable=True)
+
+    #: 这次工具调用是否失败。用它而不是去解析 content 里的文案 ——
+    #: 文案会改，布尔不会。
+    #: 可空：`role != 'tool'` 的行没有这个概念，NULL 表示"不适用"，
+    #: 与"成功了"（False）是两件事。
+    tool_failed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+    # ── 人工审批三列（v0.94）────────────────────────────────────
+    #
+    # `role == 'tool'` 且 `approval_status == 'pending'` 的行，表示
+    # 「模型想调这个工具，还在等用户点确认」。此时 `content` 里写的是
+    # "等待确认"，而**工具还没执行过**。
+    #
+    # ★ 为什么是同一行上的三个字段而不是一张 `chat_approvals` 表：
+    #   审批与那条工具消息是一对一的，而且批准后这条消息的内容就要
+    #   变成执行结果。分表会造出"消息说等待、表说已批、结果还没写"
+    #   这种半状态，界面得为它写专门分支。同一行改三个字段永远原子。
+    #   详细理由见迁移 `e8f3c2a71b54` 里那一节。
+
+    #: `None`（与审批无关）/ `'pending'` / `'approved'` / `'rejected'`。
+    #:
+    #: ★ 不用 `'none'` 这种假值：让"有没有审批"用一个 `IS NULL` 就能问。
+    approval_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    #: 谁点的确认/拒绝。按用户 id 存，不存用户名 —— 用户名可以改。
+    approval_decided_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    #: 什么时候点的。与 `approval_decided_by` 同时有值或同时为空。
+    approval_decided_at: Mapped[datetime | None] = mapped_column(
+        UtcDateTime, nullable=True
+    )
+
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, default=now_utc)
+
+    session: Mapped[ChatSession] = relationship(back_populates="messages")
+
+    def __repr__(self) -> str:  # pragma: no cover - 调试用
+        return f"<ChatMessage {self.session_id!r}#{self.seq} {self.role} n={len(self.content)}>"
+
+
+#: 一轮对话的执行状态（长任务持久化，v1.19）。
+#:
+#: | 值 | 含义 |
+#: |---|---|
+#: | `running` | 正在跑。`heartbeat_at` 每轮刷新 |
+#: | `done` | 正常收尾（模型说完了 / 到工具上限 / 等审批） |
+#: | `failed` | 抛异常死了。`last_error` 记原因，**用户界面上也看得到** |
+#: | `interrupted` | 进程重启时还挂在 `running` 的那些 —— 属于"没人接手了" |
+TURN_RUN_STATUSES = ("running", "done", "failed", "interrupted", "cancelled")
+
+
+class ChatTurnRun(Base):
+    """一轮对话的执行记录 —— 长任务持久化的**唯一事实来源**（v1.19）。
+
+    ## 为什么需要这张表（用户原话：「没有长任务持久化啊」）
+
+    改造前，"这一轮跑到哪儿了"只存在于**一个 Python 栈帧里**：`run_turn`
+    的局部变量（`round_index` / `nudges_used` / `pending_reminder`）。
+    一旦这个栈帧消失 —— 进程重启、请求断开、代码抛异常 —— 那一轮的进度
+    就**永久丢失**，而库里留下的只是半句话。界面上表现为"又没反应"，
+    用户唯一的补救是再打一次「继续」，而那等于从零开始。
+
+    持久化之后：每一轮往这张表写一次心跳，进程重启后后台的 resume 循环
+    扫到"心跳停了但状态还是 running"的行，就从 `round_index` 接着跑。
+
+    ## 为什么不复用 `chat_messages`
+
+    消息是**给用户看的产物**，这张表是**执行状态**。混在一起会让
+    「界面该渲染几条消息」和「这一轮跑到第几轮」互相耦合 —— 而后者
+    恰恰是崩溃时会不一致的那个东西。
+
+    ## 为什么状态里要有 `interrupted`
+
+    进程重启时无法区分"正在跑"和"跑到一半被打断"（内存里的栈帧一起没了）。
+    启动时把遗留的 `running` 一律改判 `interrupted`，是为了让"谁该被接手"
+    这件事有确定的判据，而不是去猜 `heartbeat_at` 有多旧。
+    """
+
+    __tablename__ = "chat_turn_runs"
+    __table_args__ = (
+        CheckConstraint(
+            f"status IN ({', '.join(repr(s) for s in TURN_RUN_STATUSES)})",
+            name="chat_turn_run_status_valid",
+        ),
+        # 后台扫描只关心"还没结束"的行，所以索引带上 status。
+        Index("ix_chat_turn_runs_status_heartbeat", "status", "heartbeat_at"),
+        Index("ix_chat_turn_runs_session", "session_id", "started_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="running")
+
+    #: 已经跑到第几轮（0 基）。resume 从这里接着跑。
+    round_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: 这一轮用掉了几次纠偏（见 `app/chat/nudge.py`）。resume 要接着算预算。
+    nudges_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: 上面那个数的**子集**：多少次是"回复被 max_tokens 切断"引起的（v1.21）。
+    #:
+    #: 单独存一列而不是从别处推算，是因为接手的那一轮必须知道"截断额度
+    #: 还剩多少" —— 推算需要原始 finish_reason，而它没有落库。
+    truncations_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: 上面那个数的**另一部分**：多少次是"本轮跑过工具、只写了一句人话"引起的（v1.23）。
+    #:
+    #: 它与 `truncations_used` 互斥（一次纠偏要么是被切断、要么是任务中途停），
+    #: 单独存的原因同样是为了让接手的那一轮**接着用同一个额度** ——
+    #: 否则每次自动接手都把 `MAX_TOOL_NUDGES` 重置，能无限续。
+    tool_nudges_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: 这一轮真正执行过几次工具。判"是不是任务型轮次"用。
+    tools_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: 已经被 resume 过几次。到上限就放弃，避免一个坏会话反复重跑烧钱。
+    resume_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: ★ v1.92：这一轮累计 token（多轮模型调用相加）。
+    #:
+    #: `usage_reported=False` 表示接入点全程没给 usage —— 三个 0 不代表
+    #: 没消耗。与 `TokenUsage.reported` 同一条纪律。
+    prompt_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    completion_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    total_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    #: 最近一次真实模型调用的 prompt token 数（不是累计值）。
+    #: OMP 的上下文百分比优先用 provider 报的当前占用；这里存最近一次，
+    #: 供对话页显示，累计值仍看 `prompt_tokens`。
+    last_prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    usage_reported: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+
+    #: 死掉的原因（异常类型 + 一句话）。对用户可见，所以要脱敏。
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    heartbeat_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, nullable=False, default=now_utc
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, nullable=False, default=now_utc
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, nullable=False, default=now_utc, onupdate=now_utc
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - 调试用
+        return (
+            f"<ChatTurnRun {self.session_id!r} {self.status} "
+            f"round={self.round_index} tries={self.resume_attempts}>"
+        )
+
+
+#: 计划条目的状态。三态而不是 bool：`in_progress` 是"正在做"，
+#: 与"还没开始"和"做完了"都不同 —— 只有两态时，模型无法表达"我正在这一步"，
+#: 而"下一步做什么"恰恰是长任务里最容易丢的信息。
+TODO_STATUSES = ("pending", "in_progress", "done")
+
+
+class ChatTodo(Base):
+    """会话级计划里的一条（v1.89）。
+
+    ## 为什么要有这张表
+
+    在此之前，"计划"只存在于模型的文本里：引擎用启发式句子判断
+    （"接下来我打算…"）来识别计划句、决定要不要打回。那是**猜**，
+    而且猜错的代价已经出现过（把阶段性计划当成收尾）。
+
+    这张表把计划变成**可查询的状态**：模型自己写、自己改状态，引擎每轮
+    把它渲染进系统提示词。于是"现在到哪一步"不再依赖上一轮说了什么。
+
+    ## 为什么不是一张通用的 task 表
+
+    它只服务对话：没有负责人、没有优先级、没有依赖关系。范围一旦放大，
+    就要处理"任务树""并发编辑""与扫描任务的对应关系" —— 那些都不是
+    对话侧现在的问题。需要更多结构时再加列，比先造一个通用模型便宜。
+    """
+
+    __tablename__ = "chat_todos"
+    __table_args__ = (
+        # 会话内序号唯一。模型用 `#3` 指代条目，序号重复就等于指代不明。
+        UniqueConstraint("session_id", "seq", name="chat_todo_session_seq"),
+        CheckConstraint(
+            f"status IN ({', '.join(repr(s) for s in TODO_STATUSES)})",
+            name="chat_todo_status_valid",
+        ),
+        Index("ix_chat_todos_session_seq", "session_id", "seq"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    #: 所属会话。CASCADE：会话被删，它的计划没有独立价值。
+    session_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    #: 会话内从 1 开始的序号。**不复用**：删掉 #2 不会让 #3 变成 #2 ——
+    #: 模型与用户都可能还引用着旧编号。
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    #: 一步要做的事。一句话，≤500 字。
+    text: Mapped[str] = mapped_column(String(500), nullable=False)
+
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", server_default="pending"
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, nullable=False, default=now_utc
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, nullable=False, default=now_utc, onupdate=now_utc
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - 调试用
+        return f"<ChatTodo {self.session_id!r} #{self.seq} {self.status}>"
+
+
+class ChatCompaction(Base):
+    """一次上下文压缩的**持久化边界**（v2.0，对齐 OMP 的 CompactionEntry）。
+
+    ## 为什么单独一张表，而不是往 `chat_messages` 塞一条 system 消息
+
+    压缩是「喂给模型的视图」变了，不是「用户历史」多了/少了。原始消息必须
+    一条不删：报告、复核、证据链都要能追到原话。把摘要写成一条普通消息会
+    让界面把它画成一个气泡，也会让 `seq` 语义从"用户可见事件"变成"内部
+    维护操作"。
+
+    ## 字段含义
+
+    - `summary`：被压缩掉那段的摘要，重建上下文时作为最前面的 user 消息；
+    - `first_kept_seq`：从这条消息（含）开始保留原文；更早的消息只以摘要形式进入模型；
+    - `tokens_before/after`：DeepSeek 走离线精确 tokenizer，其他模型字符/4。只用于观测压缩收益，不做计费。
+    """
+
+    __tablename__ = "chat_compactions"
+    __table_args__ = (
+        Index("ix_chat_compactions_session_created", "session_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    short_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    first_kept_seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    tokens_before: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tokens_after: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, nullable=False, default=now_utc
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - 调试用
+        return f"<ChatCompaction {self.session_id!r} keep={self.first_kept_seq}>"
+
+
+__all__ = [
+    "APPROVAL_STATUSES",
+    "CHAT_PERSONAS",
+    "CHAT_ROLES",
+    "MAX_MESSAGE_CHARS",
+    "MAX_PROJECT_CHARS",
+    "MAX_TOOL_NAME_CHARS",
+    "MAX_TITLE_CHARS",
+    "TODO_STATUSES",
+    "TURN_RUN_STATUSES",
+    "ChatCompaction",
+    "ChatMessage",
+    "ChatSession",
+    "ChatTodo",
+    "ChatTurnRun",
+]

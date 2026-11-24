@@ -1,0 +1,261 @@
+"""拦住「把真凭据写进了入库文件」。
+
+## 为什么需要这一条（CI 里已有的两道不够）
+
+`ci.yml` 的 `hygiene` job 已经有两道检查，但它们**只看文件名**：
+
+    git ls-files | grep -E '(^|/)[.]env($|[.])'          # 文件名里有 .env
+    git log --all --name-only | grep -E '(^|/)[.]env'   # 历史里的文件名
+
+而真正会发生的泄漏往往**不在 `.env` 里**：有人把 key 写成代码里的默认值
+（`api_key = "sk-…"`）、贴进 README、或者塞进一个测试夹具，文件名完全
+正常。那两道检查对它一无所见。
+
+## 判据：看**形状**，不看关键词
+
+`api_key` 这个词在文档里天天出现，靠关键词判断全是误报。能区分真假的是
+形状：**长、高熵、不含空格**。所以这里匹配的是 `sk-`/`AKIA`/`ghp_`/
+私钥头这类**有固定前缀**的凭据，以及"赋值给 *key*/*token* 的长串"。
+
+## ★ 为什么白名单必须存在（否则这条检查会被关掉）
+
+测试里全是 `sk-test-…`、`sk-live-ACCEPTANCE-…`、`sk-not-a-real-key-…`。
+如果它们全部报红，这条检查会在第一次推送时就被注释掉 —— 而那时它还没
+拦下任何真东西。所以：**值里含下列词的，一律放过**。
+
+代价如实记：一个真 key 恰好含有 `test` / `demo` 这类子串时会漏报。接受
+这个代价，因为漏报的概率远低于误报，而误报的后果是整个检查失效。
+
+## 扫描范围
+
+只扫**已跟踪文件**（`git ls-files`）。理由：
+  · 未跟踪文件（`.env`、`_tmp/`）本来就不入库，扫它们只会制造噪音；
+  · 历史不可变，扫出来也修不了；那属于"发现泄漏之后怎么追查"，
+    工具是 `_tmp/scan_secrets.py`（本地用，不在 CI 里跑）。
+
+用法：
+    python3 suvex-api/scripts/verify_no_secrets.py      # CI 与本地一致
+"""
+
+from __future__ import annotations
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+#: 二进制/生成物不扫：读进来也只是噪音，而且 pattern 不会命中它们。
+SKIP_SUFFIX = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".zip", ".gz",
+    ".tar", ".7z", ".whl", ".so", ".dll", ".exe", ".pyc", ".woff", ".woff2",
+    ".ttf", ".eot", ".mp4", ".mp3", ".wav", ".bin", ".db", ".sqlite",
+    ".lock", ".map",
+}
+
+#: 第三方 vendor 目录：nuclei 的 CVE 模板里本来就带着公开的示例 key
+#: （`edd1c9…` 是 CVE-2020-13945 的默认口令、Symfony 的 `ThisIs…` 是
+#: 官方文档里的默认 secret）。它们不是本项目的凭据，也不是我们泄露的；
+#: 按路径整体跳过，比逐个值加白名单稳（模板更新会换值）。
+SKIP_PREFIXES = (
+    "suvex-api/docker/suvex-sandbox/vendor/",
+)
+
+#: (规则名, 正则, 掩码长度下限)。用 `group(1)` 取值；没有分组则取 `group(0)`。
+PATTERNS: list[tuple[str, re.Pattern[str], int]] = [
+    ("OpenAI/DeepSeek 风格的 sk-", re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), 16),
+    ("Anthropic sk-ant-", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{16,}"), 20),
+    ("AWS access key", re.compile(r"\bAKIA[0-9A-Z]{16}\b"), 20),
+    ("GitHub token", re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}"), 33),
+    ("GitHub fine-grained PAT", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{40,}"), 50),
+    ("Google API key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}"), 39),
+    ("Slack token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}"), 15),
+    ("私钥块", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----"), 0),
+    (
+        "比赛平台 agent access key",
+        re.compile(r"X-Agent-AccessKey\s*[:=]\s*[\"']?([A-Za-z0-9_\-]{16,})", re.I),
+        16,
+    ),
+    (
+        "赋值给 *key*/*token* 的长串",
+        re.compile(
+            r"""(?ix)
+            (?:api[_-]?key|access[_-]?key|secret[_-]?key|auth[_-]?token|
+               access[_-]?token)
+            \s*[:=]\s*["']?([A-Za-z0-9_\-./+=]{20,})["']?
+            """
+        ),
+        20,
+    ),
+]
+
+#: "赋值给 *key*/*token* 的长串"这条规则的**名字**。
+#:
+#: ⚠️ 单独提出来是因为下面要按名字判断"这条规则是否该做表达式排除"。
+#:    写成字面量散落在两处，改一处就会静默失效 —— 而失效方向是
+#:    "表达式排除对某条规则意外生效"，那会**漏报真凭据**。
+ASSIGNMENT_RULE = "赋值给 *key*/*token* 的长串"
+
+#: ★ 「右侧其实是一个**表达式/标识符引用**」—— 不是字面量凭据。
+#:
+#: ## 为什么需要这一条（CI 实测踩到的误报）
+#:
+#: 2026-10-24 CI 在 `scans/agent_runner.py:545` 报了一处：
+#:
+#:     api_key=solve_spec.llm_api_key,
+#:
+#: 这显然是**变量引用**，不是硬编码凭据。但上面那条正则只看形状：
+#: `api_key=` 后面跟着 20+ 个合法字符 —— 而 `solve_spec.llm_api_key`
+#: 正好 22 个字符，还全是 `[A-Za-z0-9_.]`。
+#:
+#: ## 为什么不能靠"加进白名单"了事
+#:
+#: 白名单匹配的是**被捕获的那个串**（`solve_spec.llm_ap…`），
+#: 而每个调用点的变量名都不同 —— 逐个登记等于把白名单变成
+#: "所有可能的变量名"清单，永远追不上。而它红一次，人就想关掉整个检查。
+#:
+#: 所以要按**语义**区分：赋值右侧若是一个"路径/属性访问"或"函数调用"，
+#: 它就不是字面量。真正的凭据字面量长这样：`api_key="sk-abc123..."`。
+#:
+#: 判据（任一成立即视为非字面量）：
+#:   · 含 `.`（属性访问：`spec.llm_api_key`、`self.cfg.key`）
+#:   · 含 `(` 或 `)`（函数调用：`get_key()`、`os.environ[...]`）
+#:   · 是单个全小写/下划线的标识符（`llm_api_key_var`）—— 但那与
+#:     "高熵随机串"的区别在于**没有数字**且**含下划线**，见实现。
+#:
+#: ⚠️ 这条判断**只对"赋值"那条规则生效**，不用于 `sk-`/`AKIA`/私钥头
+#:    那几条有固定前缀的规则 —— 那些前缀本身就是强信号，不该被放宽。
+EXPRESSION_LIKE = re.compile(r"[.()\[\]]")
+
+
+def looks_like_expression(raw: str) -> bool:
+    """判断捕获到的长串是不是"表达式/标识符引用"而不是字面量凭据。
+
+    ⚠️ 刻意**保守**：只放过明确是表达式的情况。像 `sk-abc123def456ghi789`
+    这种既无点、无括号、又高熵的串，仍然照旧报出来 ——
+    宁可多报一次让人确认，不可漏报一次真凭据。
+    """
+    if EXPRESSION_LIKE.search(raw):
+        return True
+    # 单个标识符：全由 [a-z_] 组成且含下划线（`llm_api_key` 这类）。
+    # 真正的随机 key 几乎不可能**全小写无数字** —— 那熵太低了。
+    #
+    # ⚠️ 写成 `return <条件>` 而不是 `if <条件>: return True; return False`：
+    #    后者是 ruff 的 SIM103（"Return the condition directly"）。
+    #    我第一版就是那么写的，而本地验证时用了 `ruff check ... | tail -3`
+    #    —— 恰好把错误行截掉了，于是以为"本地绿、CI 环境不同"。
+    #    实际是同一个版本（0.16.8）报了同一个错，**是我的验证方法骗了我**。
+    return raw.islower() and "_" in raw and not any(c.isdigit() for c in raw)
+
+#: 见文件头「为什么白名单必须存在」。命中即放过。
+#:
+#: ⚠️ 这几条都不是凭空的：仓库里现有的测试夹具长这样 ——
+#:
+#:     sk-accept-SCAN-2f8a1c4e9b7d30625a8c1f4e   ← accept + SCAN
+#:     sk-live-FIRSTKEY-2f8a1c4e9b7d30625a8c1f4e  ← FIRSTKEY
+#:     sk-other-1234567890                        ← 递增数字
+#:     sk-abcdefghijklmnop                        ← 递增字母
+#:
+#: 它们**后半段是高熵的**（`2f8a1c4e…` 看着就像真 token），所以靠熵
+#: 区分不了 —— 唯一的信号是前半段那个**可读的词**。这也是为什么白名单
+#: 要覆盖"递增序列"和"连续大写字母"，而不只是几个具体的单词。
+FALSE_POSITIVE = re.compile(
+    r"""(?ix)
+    (?:
+        test|example|sample|placeholder|dummy|fake|mock|stub|
+        not[_-]?a[_-]?real|accept|probe|seed|demo|lorem|
+        redact|mask|blur|your[_-]|change[_-]?me|changeme|
+        \$\{|<[^>]*>|x{4,}|0{4,}|1{4,}|
+        # 递增的字母/数字序列：abcdef / 123456
+        abc|bcd|cde|def|efg|fgh|ghi|hij|ijk|jkl|klm|lmn|
+        mno|nop|opq|pqr|qrs|rst|stu|tuv|uvw|vwx|wxy|xyz|
+        123|234|345|456|567|678|789|890
+    )
+    """
+)
+
+#: ⚠️ 单独一条、**不带 `i` 标志**：上面那条是 `(?ix)`，`[A-Z]` 在忽略大小写
+#: 的语境下等于 `[A-Za-z]`，那样任何三个连续字母都会命中，真 key 全被放过。
+#: 连续大写字母是"人手写的常量"的典型特征（`FIRSTKEY` / `SCAN` / `ACCEPTANCE`）。
+FALSE_POSITIVE_UPPER = re.compile(r"[A-Z]{3,}")
+
+#: 形如 `sk-…` 但其实是**完整的英文句子**（文档里的示例）
+LOOKS_HUMAN = re.compile(r"^[A-Za-z]+(?:[_-][A-Za-z]+){2,}$")
+
+
+def mask(v: str) -> str:
+    """只留头尾。真值不进 CI 日志 —— 日志是公开的。"""
+    n = len(v)
+    if n <= 8:
+        return f"{'*' * n}（{n} 位）"
+    return f"{v[:6]}…{v[-4:]}（{n} 位）"
+
+
+def tracked_files() -> list[str]:
+    out = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "-c", "core.quotepath=false", "ls-files"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    return [f for f in out.stdout.splitlines() if f.strip()]
+
+
+def main() -> int:
+    files = tracked_files()
+    if not files:
+        print("读不到已跟踪文件列表（git 不可用？）")
+        return 2
+
+    hits: list[str] = []
+    scanned = 0
+    for rel in files:
+        if Path(rel).suffix.lower() in SKIP_SUFFIX:
+            continue
+        if rel.startswith(SKIP_PREFIXES):
+            continue
+        path = REPO_ROOT / rel
+        try:
+            if path.stat().st_size > 2_000_000:
+                continue
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        scanned += 1
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if len(line) > 5000 or len(line) < 16:
+                continue
+            for name, rx, minlen in PATTERNS:
+                for m in rx.finditer(line):
+                    raw = m.group(1) if m.groups() else m.group(0)
+                    if len(raw) < minlen:
+                        continue
+                    if FALSE_POSITIVE.search(raw) or FALSE_POSITIVE_UPPER.search(raw):
+                        continue
+                    if LOOKS_HUMAN.match(raw):
+                        continue
+                    # ★ 只对"赋值"那条规则判"是不是表达式"。
+                    #   其余几条有固定前缀（`sk-` / `AKIA` / 私钥头），
+                    #   前缀本身就是强信号，不该被放宽。
+                    if name == ASSIGNMENT_RULE and looks_like_expression(raw):
+                        continue
+                    hits.append(f"{rel}:{lineno}  [{name}]  {mask(raw)}")
+
+    if not hits:
+        print(f"✅ 已跟踪文件里没有形似凭据的字符串（扫描 {scanned} 个文件）")
+        return 0
+
+    print(f"❌ 发现 {len(hits)} 处形似凭据：\n")
+    for h in hits:
+        print("  " + h)
+    print(
+        "\n如果确认是真的：把它从文件里删掉、换用环境变量，然后**改掉那一个 key**"
+        " —— 提交过的东西即使删掉也留在历史里。"
+    )
+    print("如果确认是假值：把它改成含 test/example/dummy 之类字样，或加进脚本的白名单。")
+    return 1
+
+
+if __name__ == "__main__":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    raise SystemExit(main())

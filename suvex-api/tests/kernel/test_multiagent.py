@@ -1,0 +1,790 @@
+"""多智能体编排（v0.58）的测试。
+
+## 测什么 / 不测什么
+
+测：图结构（root/child/parent）、共享状态（notes/coverage）、编排工具的
+越权拦截与语义、以及**一条端到端的假跑**（root 派子 agent → 子 agent 干活
+→ root 收报告 → 汇总）。
+
+不测：真实 LLM、真实沙箱、真实并发时序。那些在 Kali 上做真跑验证
+（本机没有 docker）。
+
+## 为什么用「剧本式 gateway」而不是 mock `chat`
+
+这个模块的全部逻辑都在「读到什么回复 → 做什么」这条链上。用一个按**调用
+顺序**吐预设回复的 gateway，能精确锁住"第 N 次调用该看到什么"，
+而 mock `chat` 的返回值会绕过"回复怎么被解析"这一层 —— 那一层恰恰是
+最容易错的地方（文本协议）。
+"""
+
+from __future__ import annotations
+
+import json
+
+from app.kernel import multiagent, runner
+from tests.kernel.test_runner import _FakeSandbox, _run, _spec
+
+
+class _ScriptedGateway:
+    """按调用顺序吐预设回复。**用完就报错**，逼测试精确。
+
+    ⚠️ root 与 child 共用同一个 gateway 对象（真实里也是同一个 LlmGateway
+    由所有 agent 复用）。所以这里按"全局第 N 次调用"给回复 —— 测试要自己
+    算清 root 第 1 次、child 第 2 次…… 的顺序。
+    """
+
+    def __init__(self, replies: list[str]) -> None:
+        self.replies = list(replies)
+        self.calls = 0
+        self.seen_systems: list[str] = []
+        self.seen_messages: list[list[dict]] = []
+        self.model = "test-model"
+        self.label = "test-label"
+
+    async def chat(self, messages, *, system):  # noqa: ANN001, ANN201
+        self.calls += 1
+        self.seen_systems.append(system)
+        self.seen_messages.append(list(messages))
+        if not self.replies:
+            # 比"静默返回空"好：空回复会让循环继续烧轮次，测试却看不出问题。
+            raise AssertionError(f"gateway 被多调用了（第 {self.calls} 次），剧本已用完")
+        text = self.replies.pop(0)
+        return runner.LlmReply(
+            text=text,
+            source="content",
+            usage=runner.TokenUsage(
+                prompt_tokens=10, completion_tokens=20, total_tokens=30, reported=True
+            ),
+        )
+
+
+# ══════════════════════════════════════════════════════════
+# 纯数据层：图 / 共享状态
+# ══════════════════════════════════════════════════════════
+
+
+def test_new_agent_ids_are_short_and_unique() -> None:
+    """agent id 要短（会进提示词与工具返回，长 id 纯浪费 token）且本场唯一。"""
+    coord = multiagent.AgentCoordinator()
+    root = coord.add_root()
+    a = coord.add_child(name="侦察", task="摸面", parent_id=root.agent_id)
+    b = coord.add_child(name="验证", task="测 SQLi", parent_id=root.agent_id)
+    assert root.agent_id == "root"
+    assert a.agent_id == "a1" and b.agent_id == "a2"
+
+
+def test_children_of_only_returns_direct_children() -> None:
+    coord = multiagent.AgentCoordinator()
+    root = coord.add_root()
+    a = coord.add_child(name="A", task="t", parent_id=root.agent_id)
+    b = coord.add_child(name="B", task="t", parent_id=root.agent_id)
+    assert {n.agent_id for n in coord.children_of("root")} == {a.agent_id, b.agent_id}
+    assert coord.children_of(a.agent_id) == []
+
+
+def test_running_children_filters_terminal() -> None:
+    coord = multiagent.AgentCoordinator()
+    coord.add_root()
+    a = coord.add_child(name="A", task="t", parent_id="root")
+    b = coord.add_child(name="B", task="t", parent_id="root")
+    a.status = multiagent.STATUS_RUNNING
+    b.status = multiagent.STATUS_COMPLETED
+    running = coord.running_children("root")
+    assert [n.agent_id for n in running] == [a.agent_id]
+
+
+def test_spawn_capped_at_max_children() -> None:
+    """★ 子 agent 有硬上限 —— 否则一个"全面看看"能开二十个、烧光 token。"""
+    coord = multiagent.AgentCoordinator(total_budget=1000)
+    coord.add_root()
+    for i in range(multiagent.MAX_CHILDREN):
+        coord.add_child(name=f"c{i}", task="t", parent_id="root")
+    assert coord.can_spawn("root") is False, "到达上限后不该再允许 spawn"
+
+
+def test_spawn_blocked_when_budget_exhausted() -> None:
+    coord = multiagent.AgentCoordinator(total_budget=5)
+    coord.add_root()
+    coord.turns_used = 5
+    assert coord.can_spawn("root") is False
+
+
+def test_total_budget_scales_with_max_turns_for_parallel_agents() -> None:
+    """★ 多智能体的总预算必须**大于**单循环的 max_turns。
+
+    回归线（2026-10-22）：原来 `TOTAL_TURN_RATIO = 1.0` —— 总预算 == max_turns。
+    但那是给**一条**循环的数；多智能体是 root + 最多 6 个子 agent 共 7 条循环
+    来分这 80，实测一次真实渗透 6 个 agent **恰好跑满 80 轮就断**，4 个专职
+    子 agent 每条只分到十几二十轮，全卡在侦察阶段、一条 confirmed 都没收敛到。
+    开 4 个子 agent 本为并行覆盖更多面，结果总预算没跟着涨，比单循环还浅。
+
+    这里钉死：同样 max_turns 下，多智能体总预算 = max_turns * TOTAL_TURN_RATIO，
+    且严格大于 max_turns（否则并行等于白开）。
+    """
+    # 复刻 run_multi_agent 里的算法 `total_budget=max(12, int(max_turns * RATIO))`，
+    # 不构造 SolveSpec（它有 9 个必填位置参数，为一条算式去拼它不划算）。
+    ratio = multiagent.TOTAL_TURN_RATIO
+    assert ratio > 1.0, "总预算必须比单循环大，否则并行无意义"
+    for max_turns in (80, 150):
+        total = max(12, int(max_turns * ratio))
+        assert total > max_turns, f"多智能体总预算 {total} 不该 <= max_turns {max_turns}"
+
+
+def test_shared_notes_overwrite_by_title() -> None:
+    """同名标题**覆盖**写（去重靠标题）—— 这是"别写重复笔记"的实现。"""
+    shared = multiagent.SharedState()
+    shared.write_note("入口", "v1 内容", by="A")
+    shared.write_note("入口", "v2 内容", by="B")
+    assert list(shared.notes.keys()) == ["入口"]
+    assert "v2 内容" in shared.notes["入口"]
+    assert "by B" in shared.notes["入口"]
+
+
+def test_shared_coverage_records_chain_of_ownership() -> None:
+    """同一 surface 被两人测过 → `by` 记成 "A → B"，因为后者的结论更可信。"""
+    shared = multiagent.SharedState()
+    shared.record_coverage("/api/login", "认证绕过", "干净", by="A")
+    shared.record_coverage("/api/login", "认证绕过", "确认弱口令", by="B")
+    rec = shared.coverage["/api/login"]
+    assert rec["outcome"] == "确认弱口令"
+    assert rec["by"] == "A → B"
+
+
+def test_render_graph_marks_you() -> None:
+    coord = multiagent.AgentCoordinator()
+    coord.add_root()
+    coord.add_child(name="侦察", task="t", parent_id="root")
+    text = coord.render_graph(me="root")
+    assert "← you" in text
+    assert "root" in text and "侦察" in text
+
+
+# ══════════════════════════════════════════════════════════
+# 编排工具：越权拦截 + 语义
+# ══════════════════════════════════════════════════════════
+
+
+def _dispatch_orch(name, args, *, coord, me, is_root=True, spawner=None):  # noqa: ANN001
+    return _run(
+        multiagent.dispatch_orchestration_tool(
+            name,
+            args,
+            coord=coord,
+            me=me,
+            is_root=is_root,
+            spawner=spawner,
+            sandbox=_FakeSandbox(),
+            http=None,
+            spec=_spec(),
+        )
+    )
+
+
+def test_root_cannot_call_agent_finish() -> None:
+    """★ 越权拦截：root 用 `agent_finish` 会被告知去用 `finish_scan`。"""
+    coord = multiagent.AgentCoordinator()
+    root = coord.add_root()
+    out = _dispatch_orch("agent_finish", {"result_summary": "x"}, coord=coord, me=root, is_root=True)
+    parsed = json.loads(out)
+    assert parsed["success"] is False
+    assert "finish_scan" in parsed["error"]
+
+
+def test_child_cannot_call_finish_scan() -> None:
+    coord = multiagent.AgentCoordinator()
+    coord.add_root()
+    child = coord.add_child(name="c", task="t", parent_id="root")
+    out = _dispatch_orch("finish_scan", {}, coord=coord, me=child, is_root=False)
+    parsed = json.loads(out)
+    assert parsed["success"] is False
+    assert "agent_finish" in parsed["error"]
+
+
+# ══════════════════════════════════════════════════════════
+# 3c. ★ v0.73：`agent_finish` 的结构化发现必须进活收集器
+#
+# 事故形状见 `_timeout_outcome`：扫描被超时取消时，子智能体已经用
+# `agent_finish(findings=[...])` 明确交出一批发现，但旧代码只把它拼成
+# 一段纯文本写进共享笔记 —— 文本还在，findings 为 0。
+# ══════════════════════════════════════════════════════════
+
+
+def test_agent_finish_sinks_structured_findings() -> None:
+    """★ 子智能体 `agent_finish` 交的每条发现都要落进 `coord.finding_sink`。
+
+    ## 反面对照（变异会红）
+
+    把 `_do_agent_finish` 里那行 `_sink_agent_findings(coord, findings, by=me.name)`
+    删掉（回到 v0.72 只写笔记），这条立刻因为 sink 为空而失败。
+    """
+    sink: list[object] = []
+    coord = multiagent.AgentCoordinator(finding_sink=sink)
+    coord.add_root()
+    child = coord.add_child(name="CORS 验证", task="t", parent_id="root")
+
+    out = _dispatch_orch(
+        "agent_finish",
+        {
+            "result_summary": "确认 CORS 任意源反射",
+            "findings": [
+                {"title": "CORS 反射任意 Origin", "severity": "medium"},
+                {"title": "登录时序枚举", "severity": "medium"},
+            ],
+            "open_items": ["SSRF 未验证"],
+        },
+        coord=coord,
+        me=child,
+        is_root=False,
+    )
+    assert json.loads(out)["success"] is True
+    assert len(sink) == 2
+    assert sink[0]["title"] == "CORS 反射任意 Origin"
+    # 原始结构化字段必须原样保留（不能只留 title）
+    assert sink[0]["severity"] == "medium"
+
+
+def test_agent_finish_wraps_plain_string_findings() -> None:
+    """`findings` 允许是字符串数组（schema 本来就允许）；字符串按 title 包一层。
+
+    ## 为什么不能丢
+
+    宁可少几个字段，也不能把一条真实发现丢掉 —— 丢掉的是"我们漏了"。
+    但也不能把 `findings` 本身（非 list）或空串塞进去当噪音。
+    """
+    sink: list[object] = []
+    coord = multiagent.AgentCoordinator(finding_sink=sink)
+    coord.add_root()
+    child = coord.add_child(name="c", task="t", parent_id="root")
+
+    _dispatch_orch(
+        "agent_finish",
+        {"result_summary": "x", "findings": ["越权 GET /api/v1/users", "  ", 42, None]},
+        coord=coord,
+        me=child,
+        is_root=False,
+    )
+    titles = [f.get("title") for f in sink]
+    assert titles == ["越权 GET /api/v1/users"]  # 空串/数字/None 都被丢掉
+    assert sink[0]["reported_by"] == "c"
+
+
+def test_agent_finish_does_not_touch_sink_when_disabled() -> None:
+    """`finding_sink=None`（CTF 解题路径默认）时是彻底 no-op，不抛。"""
+    coord = multiagent.AgentCoordinator()  # finding_sink 默认 None
+    coord.add_root()
+    child = coord.add_child(name="c", task="t", parent_id="root")
+    out = _dispatch_orch(
+        "agent_finish",
+        {"result_summary": "x", "findings": [{"title": "t"}]},
+        coord=coord,
+        me=child,
+        is_root=False,
+    )
+    assert json.loads(out)["success"] is True
+
+
+def test_run_multi_agent_shares_sink_object_with_spec() -> None:
+    """`run_multi_agent` 必须把 spec 上**同一个 list 对象**挂到 coord 上。
+
+    ## 这条防的是"对象不共享"
+
+    如果 `run_multi_agent` 里写成 `finding_sink=list(getattr(spec,...) or [])`
+    （复制了一份），子智能体往 coord 那份里登记，超时路径从 spec 那份里收割
+    → 永远是空。这正是 v0.72 `parse_server_configs` 那种"配了不生效"的形状。
+    这里通过检查源码里的赋值形态来锁住 —— 装配确实用 `getattr(spec, ..., None)`。
+    """
+    import inspect
+
+    src = inspect.getsource(multiagent.run_multi_agent)
+    assert 'finding_sink=getattr(spec, "finding_sink", None)' in src
+    # 不能出现"复制一份"的写法
+    assert "finding_sink=list(" not in src
+
+
+def test_every_root_only_tool_is_refused_for_children() -> None:
+    """★ `_ROOT_ONLY` 里的**每一个**工具，子 agent 调用都必须被拦下。
+
+    这条替换了原来的 `test_child_cannot_call_finish_scan_placeholder` ——
+    那个函数体只有一句 `return`（"占位以保持原有测试顺序，不测逻辑"），
+    名字在守一件事，实际什么都没守。
+
+    为什么按集合遍历而不是逐个手写：`_ROOT_ONLY` 是**集合**，加工具只要
+    往集合里塞一个名字就生效；手写用例永远跟不上，新加的那个就成了
+    没人守的漏洞。遍历让它自带"新增即覆盖"。
+
+    拦不住的后果：子 agent 自己调 `finish_scan` 会把整场扫描结束掉
+    （root 还在等它干活），或调 `create_agent` 无限分裂。
+    """
+    coord = multiagent.AgentCoordinator()
+    coord.add_root()
+    child = coord.add_child(name="c", task="t", parent_id="root")
+
+    for tool in sorted(multiagent._ROOT_ONLY):
+        out = json.loads(_dispatch_orch(tool, {}, coord=coord, me=child, is_root=False))
+        assert out["success"] is False, f"{tool} 没被子 agent 越权拦截挡住"
+        assert "只有 root 主智能体" in out["error"], f"{tool} 的拒绝理由没说明原因"
+
+
+def test_create_agent_requires_name_and_task() -> None:
+    coord = multiagent.AgentCoordinator()
+    root = coord.add_root()
+    out = _dispatch_orch("create_agent", {"name": "x"}, coord=coord, me=root)
+    assert json.loads(out)["success"] is False
+
+
+def test_create_agent_blocked_without_spawner() -> None:
+    coord = multiagent.AgentCoordinator()
+    root = coord.add_root()
+    out = _dispatch_orch("create_agent", {"name": "x", "task": "y"}, coord=coord, me=root, spawner=None)
+    assert json.loads(out)["success"] is False
+    assert "spawner" in json.loads(out)["error"]
+
+
+def test_write_note_then_list_notes_visible_to_other_agent() -> None:
+    """共享草稿纸：A 写的，B 能读到（这是跨 agent 传中间结论的机制）。"""
+    coord = multiagent.AgentCoordinator()
+    root = coord.add_root()
+    child = coord.add_child(name="A", task="t", parent_id="root")
+    _dispatch_orch(
+        "write_note",
+        {"title": "发现", "body": "/admin 免认证"},
+        coord=coord,
+        me=child,
+        is_root=False,
+    )
+    out = _dispatch_orch("list_notes", {}, coord=coord, me=root, is_root=True)
+    assert "/admin 免认证" in json.loads(out)["notes"]
+
+
+def test_record_coverage_surfaces_in_list() -> None:
+    coord = multiagent.AgentCoordinator()
+    root = coord.add_root()
+    _dispatch_orch(
+        "record_coverage",
+        {"surface": "/api/users", "risk": "IDOR", "outcome": "确认越权"},
+        coord=coord,
+        me=root,
+    )
+    out = _dispatch_orch("list_coverage", {}, coord=coord, me=root)
+    assert "/api/users" in json.loads(out)["coverage"]
+
+
+def test_send_message_rejects_when_target_terminal() -> None:
+    """★ 我们的子 agent 跑完就结束、不能唤醒 —— 发消息给已结束的会明确报错，
+    而不是静默丢弃让 root 空等。"""
+    coord = multiagent.AgentCoordinator()
+    root = coord.add_root()
+    child = coord.add_child(name="c", task="t", parent_id="root")
+    child.status = multiagent.STATUS_COMPLETED
+    out = _dispatch_orch(
+        "send_message_to_agent", {"target_agent_id": child.agent_id, "message": "hi"},
+        coord=coord, me=root,
+    )
+    parsed = json.loads(out)
+    assert parsed["success"] is False
+    assert "completed" in parsed["error"]
+
+
+def test_unknown_orchestration_tool_lists_available() -> None:
+    coord = multiagent.AgentCoordinator()
+    root = coord.add_root()
+    out = _dispatch_orch("frobnicate", {}, coord=coord, me=root)
+    parsed = json.loads(out)
+    assert parsed["success"] is False
+    assert "create_agent" in parsed["error"]
+
+
+# ══════════════════════════════════════════════════════════
+# 端到端：root 派子 agent → 子 agent 干活 → root 汇总
+# ══════════════════════════════════════════════════════════
+
+
+def test_end_to_end_root_spawns_child_and_merges_findings() -> None:
+    """★★ 完整路径：root 派一个子 agent，子 agent 跑出自己的发现，
+    root 收报告后用 FINAL 汇总 —— 最终 outcome 里能看到**两边的发现合并**。
+
+    调用顺序（共用 gateway）：
+      1. root  → create_agent（派"SQLi 验证"）
+      2. child → FINAL（子 agent 报一条发现）
+      3. root  → FINAL（root 收口，报自己一条发现）
+    """
+    root_final = 'FINAL: {"summary": "完成", "findings": [{"title": "root 发现的未授权读取", "severity": "low"}]}'
+    child_final = 'FINAL: {"summary": "子 agent 完成", "findings": [{"title": "SQLi 注入确认", "severity": "high"}]}'
+    spawn_action = (
+        "ACTION: "
+        + json.dumps(
+            {
+                "tool": "create_agent",
+                "args": {"name": "SQLi 验证", "task": "验证 /api/login 是否有 SQL 注入"},
+            },
+            ensure_ascii=False,
+        )
+    )
+    gateway = _ScriptedGateway([spawn_action, child_final, root_final])
+    sandbox = _FakeSandbox()
+    spec = _spec(multi_agent=True, max_turns=6)
+
+    # on_progress 不应改变结果（这里给 None，走"没有回调"分支）。
+    outcome = _run(
+        runner.solve_in_sandbox(spec, sandbox=sandbox, gateway=gateway, system_prompt="sys")
+    )
+
+    # 两个 agent 都跑过（root 至少 2 次：派活 + 收口；child 至少 1 次：FINAL）。
+    assert gateway.calls >= 3, f"应当 root 与 child 都跑过，实际调用 {gateway.calls} 次"
+    titles = [f.get("title") for f in (outcome.findings or []) if isinstance(f, dict)]
+    assert "SQLi 注入确认" in titles, "子 agent 的发现必须被汇总进来"
+    assert "root 发现的未授权读取" in titles, "root 自己的发现也要在"
+
+
+def test_multi_agent_emits_hint_consumed_event() -> None:
+    """★★ 多智能体路径里，人给的线索被并入推理时**必须发一条过程事件**。
+
+    回归线（2026-10-22 真跑暴露）：单循环路径（runner.py:4214）会给用户发
+    「已把人工线索并入本轮推理：…」，但多智能体路径（multiagent.py）
+    只把线索塞进 recent、**漏发这条事件** —— 人给了线索，活动流里却看不到
+    「已接收」，只能干等、怀疑输入框没生效。那次用户发了「把 8080 关了」，
+    root 约 87 秒后确实并入了推理，但界面上没有任何回执。
+    """
+    events: list[tuple[str, str, dict[str, str]]] = []
+    root_final = 'FINAL: {"summary": "完成", "findings": []}'
+    gateway = _ScriptedGateway([root_final])
+    spec = _spec(multi_agent=True, max_turns=3)
+    hint_text = "扫描端口看有没有漏洞提权"
+
+    outcome = _run(
+        runner.solve_in_sandbox(
+            spec,
+            sandbox=_FakeSandbox(),
+            gateway=gateway,
+            system_prompt="sys",
+            on_progress=lambda k, s, p: events.append((k, s, p)),
+            hint_provider=lambda: hint_text,
+        )
+    )
+    assert outcome.error is None
+
+    hint_events = [e for e in events if "人工线索" in e[1]]
+    assert hint_events, f"应发出一条「已把人工线索并入…」事件，实际事件：{events!r}"
+    kind, summary, payload = hint_events[0]
+    assert kind == "reasoning"
+    assert hint_text[:10] in summary, "事件里要带上线索内容，人才能确认是这条被收走了"
+    # 口径：是「并入推理」不是「已执行」—— 线索是方向性建议
+    assert "并入本轮推理" in summary
+
+
+def test_multi_agent_hint_is_fed_into_next_turn_messages() -> None:
+    """线索不只发事件，必须**真的进模型上下文**（否则发了事件也是假的）。"""
+    events: list[tuple[str, str, dict[str, str]]] = []
+    gateway = _ScriptedGateway(['FINAL: {"summary": "完成", "findings": []}'])
+    spec = _spec(multi_agent=True, max_turns=3)
+
+    _run(
+        runner.solve_in_sandbox(
+            spec,
+            sandbox=_FakeSandbox(),
+            gateway=gateway,
+            system_prompt="sys",
+            on_progress=lambda k, s, p: events.append((k, s, p)),
+            hint_provider=lambda: "把 8080 端口服务关了",
+        )
+    )
+    # gateway.seen_messages 累积每次 chat 的 messages；线索应作为 user 消息出现在其后调用里
+    joined = " ".join(
+        m["content"] for msgs in gateway.seen_messages for m in msgs if m["role"] == "user"
+    )
+    assert "把 8080 端口服务关了" in joined, "线索必须作为 user 消息进模型上下文"
+
+
+def test_multi_agent_flag_off_is_byte_identical_single_loop() -> None:
+    """★★ 默认（multi_agent=False）**完全走单循环** —— 这是本版最硬的回归守卫。
+
+    证据：单循环里 `create_agent` 不是合法工具，模型调它只会拿到
+    "未知工具" 一句话，然后正常用 run_shell 干活并 FINAL。
+    """
+    sandbox = _FakeSandbox(outputs={"ls": "hint.txt"})
+    gateway = _ScriptedGateway(
+        [
+            'ACTION: {"tool": "run_shell", "args": {"command": "ls /work"}}',
+            'FINAL: {"candidates": [{"flag": "flag{x}", "evidence": "看到了"}]}',
+        ]
+    )
+    spec = _spec()  # multi_agent 默认 False
+    outcome = _run(
+        runner.solve_in_sandbox(spec, sandbox=sandbox, gateway=gateway, system_prompt="sys")
+    )
+    assert [c.flag for c in outcome.candidates] == ["flag{x}"]
+    assert gateway.calls == 2, "单循环：一次工具 + 一次 FINAL，不该有多余调用"
+
+
+def test_child_cannot_spawn_grandchild() -> None:
+    """★ 单层编排：子 agent 的 spawner 是 None —— 它调 create_agent 会失败。
+    防"子 agent 再开子 agent"指数爆炸。"""
+    coord = multiagent.AgentCoordinator()
+    coord.add_root()
+    child = coord.add_child(name="c", task="t", parent_id="root")
+    out = _dispatch_orch(
+        "create_agent", {"name": "gc", "task": "x"},
+        coord=coord, me=child, is_root=False, spawner=None,
+    )
+    # 越权拦截先挡（create_agent 是 root-only）
+    assert json.loads(out)["success"] is False
+
+
+def test_root_prompt_and_child_prompt_differ() -> None:
+    """两份提示词必须不同 —— 否则"root 只调度、child 只动手"的分工不成立。"""
+    root_p = runner.load_root_prompt()
+    child_p = runner.load_child_prompt()
+    assert root_p != child_p
+    assert "调度" in root_p
+    assert "执行者" in child_p
+
+
+def test_build_multi_agent_prompts_includes_scenario_blocks() -> None:
+    """★ 多智能体的两份 prompt **都**带上本题场景块（与单循环同一份 base），
+    所以渗透/IR 纪律不会因为走多智能体就丢。"""
+    spec = _spec(category="pentest-evaluation", pentest=True)
+    root_p, child_p = runner.build_multi_agent_prompts(spec)
+    # 渗透块里的一句话，两份都该有。
+    marker = "已验证的安全发现"
+    assert marker in root_p
+    assert marker in child_p
+    # 且各自再叠了角色层。
+    assert "调度者" in root_p
+    assert "执行者" in child_p
+
+
+# ══════════════════════════════════════════════════════════
+# v0.70：从 strix 学来的三个小工具（stop_agent / think / todo）
+# ══════════════════════════════════════════════════════════
+
+
+def test_stop_agent_marks_child_and_records_reason() -> None:
+    """★ root 能用 `stop_agent` 叫停一个跑偏的子 agent。
+
+    实现是**协作式**的：给节点置 `stop_requested=True`，子 agent 下一轮自己收尾
+    （不 cancel task —— 那会让它来不及把已得结论写成笔记）。理由进共享笔记，
+    复盘时能说清"为什么停它"。
+    """
+    coord = multiagent.AgentCoordinator()
+    root = coord.add_root()
+    child = coord.add_child(name="跑偏的", task="t", parent_id="root")
+    assert child.stop_requested is False
+
+    out = _dispatch_orch(
+        "stop_agent",
+        {"target_agent_id": child.agent_id, "reason": "这条路已排除"},
+        coord=coord,
+        me=root,
+    )
+    parsed = json.loads(out)
+    assert parsed["success"] is True
+    assert child.stop_requested is True
+    # 理由进共享笔记，别人 list_notes 能看到。
+    notes = coord.shared.render_notes()
+    assert "跑偏的" in notes and "这条路已排除" in notes
+
+
+def test_stop_agent_rejects_self_and_unknown() -> None:
+    coord = multiagent.AgentCoordinator()
+    root = coord.add_root()
+    # 停自己 → 拒。
+    out = _dispatch_orch("stop_agent", {"target_agent_id": "root"}, coord=coord, me=root)
+    assert json.loads(out)["success"] is False
+    # 停不存在 → 拒。
+    out = _dispatch_orch("stop_agent", {"target_agent_id": "a99"}, coord=coord, me=root)
+    assert json.loads(out)["success"] is False
+    # 缺参数 → 拒。
+    out = _dispatch_orch("stop_agent", {}, coord=coord, me=root)
+    assert json.loads(out)["success"] is False
+
+
+def test_think_echoes_thought_back() -> None:
+    """`think` 让模型"只推理不动手"也算一次合法行动 —— 推理原样回到上下文。"""
+    coord = multiagent.AgentCoordinator()
+    root = coord.add_root()
+    out = _dispatch_orch(
+        "think", {"thought": "看到的都是 401，怀疑需要先拿 token"}, coord=coord, me=root
+    )
+    parsed = json.loads(out)
+    assert parsed["success"] is True
+    assert "401" in parsed["thought"]
+    # 空 thought → 拒（否则它就退化成空转轮）。
+    out = _dispatch_orch("think", {}, coord=coord, me=root)
+    assert json.loads(out)["success"] is False
+
+
+def test_todo_lifecycle() -> None:
+    """待办清单：创建 → 列出 → 标记完成。"""
+    coord = multiagent.AgentCoordinator()
+    root = coord.add_root()
+    out = _dispatch_orch("create_todo", {"text": "枚举 /api 子路径"}, coord=coord, me=root)
+    parsed = json.loads(out)
+    assert parsed["success"] is True
+    todo_id = parsed["id"]
+    assert parsed["status"] == "pending"
+
+    listing = json.loads(_dispatch_orch("list_todos", {}, coord=coord, me=root))["todos"]
+    assert "枚举 /api 子路径" in listing
+    assert "[ ]" in listing
+
+    upd = json.loads(
+        _dispatch_orch("update_todo", {"id": todo_id, "status": "done"}, coord=coord, me=root)
+    )
+    assert upd["success"] is True
+    assert "[x]" in upd["note"]
+
+
+def test_todo_rejects_bad_status_and_unknown_id() -> None:
+    coord = multiagent.AgentCoordinator()
+    root = coord.add_root()
+    todo_id = json.loads(
+        _dispatch_orch("create_todo", {"text": "x"}, coord=coord, me=root)
+    )["id"]
+    # 非法 status。
+    bad = json.loads(
+        _dispatch_orch("update_todo", {"id": todo_id, "status": "banana"}, coord=coord, me=root)
+    )
+    assert bad["success"] is False
+    # 不存在的 id。
+    missing = json.loads(
+        _dispatch_orch("update_todo", {"id": "t99", "status": "done"}, coord=coord, me=root)
+    )
+    assert missing["success"] is False
+    # 空文本。
+    empty = json.loads(_dispatch_orch("create_todo", {}, coord=coord, me=root))
+    assert empty["success"] is False
+
+
+def test_child_cannot_call_todo_or_stop_agent() -> None:
+    """★ 待办与叫停是**调度权**，只有 root 有；子 agent 调会被越权拦下。"""
+    coord = multiagent.AgentCoordinator()
+    coord.add_root()
+    child = coord.add_child(name="c", task="t", parent_id="root")
+    for tool in ("create_todo", "stop_agent"):
+        out = json.loads(
+            _dispatch_orch(tool, {"text": "x"}, coord=coord, me=child, is_root=False)
+        )
+        assert out["success"] is False, tool
+
+
+def test_new_tools_are_advertised_in_prompt() -> None:
+    """新工具必须写进 root 提示词 —— 否则模型不知道它们存在。"""
+    root_p = runner.load_root_prompt()
+    for tool in ("stop_agent", "create_todo", "think"):
+        assert tool in root_p, tool
+    child_p = runner.load_child_prompt()
+    assert "think" in child_p
+
+
+# ══════════════════════════════════════════════════════════
+# v0.70 T3：共享威胁模型（get/amend）
+# ══════════════════════════════════════════════════════════
+
+
+def test_threat_model_amend_dedupes_and_returns_full() -> None:
+    """往威胁模型某栏追加条目，重复的去掉（大小写不敏感）。"""
+    coord = multiagent.AgentCoordinator()
+    root = coord.add_root()
+    out = _dispatch_orch(
+        "amend_threat_model",
+        {"field": "assets", "items": ["/admin 后台", "api.example.com", "/admin 后台"]},
+        coord=coord,
+        me=root,
+    )
+    parsed = json.loads(out)
+    assert parsed["success"] is True
+    # 三条输入去重后剩两条（含 by 标注）。
+    assert len(parsed["items"]) == 2
+    assert sum("/admin 后台" in s for s in parsed["items"]) == 1
+
+
+def test_threat_model_get_renders_four_sections() -> None:
+    coord = multiagent.AgentCoordinator()
+    root = coord.add_root()
+    _dispatch_orch("amend_threat_model", {"field": "trust_boundaries", "item": "内网/外网"}, coord=coord, me=root)
+    out = json.loads(_dispatch_orch("get_threat_model", {}, coord=coord, me=root))
+    tm = out["threat_model"]
+    for label in ("资产", "信任边界", "攻击假设", "优先级"):
+        assert label in tm, label
+    assert "内网/外网" in tm
+
+
+def test_threat_model_amend_rejects_bad_field_and_empty() -> None:
+    coord = multiagent.AgentCoordinator()
+    root = coord.add_root()
+    # 未知栏位 → 拒（不会悄悄写进没人读的键）。
+    bad = json.loads(
+        _dispatch_orch("amend_threat_model", {"field": "banana", "item": "x"}, coord=coord, me=root)
+    )
+    assert bad["success"] is False
+    # 缺 field → 拒。
+    nofield = json.loads(_dispatch_orch("amend_threat_model", {"item": "x"}, coord=coord, me=root))
+    assert nofield["success"] is False
+    # 缺条目 → 拒。
+    noitem = json.loads(_dispatch_orch("amend_threat_model", {"field": "assets"}, coord=coord, me=root))
+    assert noitem["success"] is False
+
+
+def test_child_can_read_and_amend_threat_model() -> None:
+    """★ 威胁模型是**共享**的：子 agent 也能读、也能补充（它在一线）。"""
+    coord = multiagent.AgentCoordinator()
+    coord.add_root()
+    child = coord.add_child(name="c", task="t", parent_id="root")
+    got = json.loads(_dispatch_orch("get_threat_model", {}, coord=coord, me=child, is_root=False))
+    assert got["success"] is True
+    amended = json.loads(
+        _dispatch_orch(
+            "amend_threat_model",
+            {"field": "hypotheses", "item": "/admin 可能只做了前端校验"},
+            coord=coord,
+            me=child,
+            is_root=False,
+        )
+    )
+    assert amended["success"] is True
+    assert any("/admin" in s for s in amended["items"])
+
+
+def test_threat_model_and_todos_are_advertised_in_root_prompt() -> None:
+    root_p = runner.load_root_prompt()
+    for tool in ("get_threat_model", "amend_threat_model"):
+        assert tool in root_p, tool
+    child_p = runner.load_child_prompt()
+    assert "get_threat_model" in child_p
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 日志截断必须留标记
+# ─────────────────────────────────────────────────────────────────────
+#
+# 裸切片（`text[:200]`）在日志里制造了一类真实误判：截断后的内容看起来
+# 就是完整内容，于是「字段缺失」「JSON 不完整」会被当成产品缺陷去查。
+# 实测被误导过一次 —— 某条记录里位于 JSON 最末尾的字段正好被切掉，
+# 解析出 `None`，一度判定「服务端会拒」。
+
+
+def test_没超长时原样返回():
+    assert multiagent._clip_for_log("短内容", 200) == "短内容"
+    assert multiagent._clip_for_log("", 200) == ""
+
+
+def test_恰好等于上限时不加标记():
+    """边界：等于上限没有丢任何字符，加标记反而会误导。"""
+    text = "y" * 10
+    assert multiagent._clip_for_log(text, 10) == text
+
+
+def test_超长时带标记与原长():
+    text = "x" * 25
+    clipped = multiagent._clip_for_log(text, 10)
+
+    assert clipped.startswith("x" * 10), "保留的必须是前缀"
+    assert "已截断" in clipped, f"必须明确说被截断了，实际：{clipped}"
+    assert "25" in clipped, f"标记里要有原始长度，实际：{clipped}"
+
+
+def test_标记本身不会被再次计入前缀():
+    """前缀长度必须严格等于 limit —— 否则日志行宽会随原长漂移。"""
+    clipped = multiagent._clip_for_log("z" * 100, 20)
+    prefix = clipped.split("…")[0]
+    assert len(prefix) == 20, f"前缀应为 20 字符，实际 {len(prefix)}"

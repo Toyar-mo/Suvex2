@@ -1,0 +1,22 @@
+# OS & Editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Python / suvex-api
+**/__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+suvex-api/.env
+suvex-api/_scan_runs/
+suvex-api/_uploads/
+suvex-api/chat-workspaces/
+
+# Node / suvex-web
+suvex-web/node_modules/
+suvex-web/dist/
+suvex-web/.env.local
+*.log

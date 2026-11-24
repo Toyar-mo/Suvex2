@@ -1,0 +1,462 @@
+"""技能管理的 HTTP 端点（v0.88）。
+
+## 为什么单独一个路由模块，不并进 `kernel/router.py`
+
+两个理由，第二个是决定性的：
+
+1. **职责不同**：`kernel/router.py` 那一组回答"解题内核怎么跑"（账号、
+   赛事、题目、队列）。技能管理回答"模型能查到哪些知识" —— 它是
+   **知识库的编辑面**，与解题流水线无关。
+2. **那个文件已经 1600+ 行，且是多会话并行编辑的热点**。往里插一整段
+   会持续撞车（实测：本轮三次编辑都因为"file changed since it was read"
+   失败）。独立模块把冲突面降到最小 —— 这不是洁癖，是并行开发的现实约束。
+
+## 鉴权：读 read、写 admin
+
+与工具清单那条的理由**不同**：这里写的是**内容**，而内容会进模型上下文。
+技能正文是"教模型怎么做事"的文本，能改它的人就能改变智能体的行为，
+包括让它绕过某条纪律。这与 `PUT /kernel/settings` 同级。
+
+## ⚠️ 内置技能只读
+
+它们随代码分发、部署时整目录覆盖。允许写会让用户创建的技能
+在下次部署时**静默消失**（见 `skill_store.py` 文件头）。
+"""
+
+from __future__ import annotations
+
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, File, Request, UploadFile, status
+from sqlalchemy.orm import Session
+
+from app.audit import service as audit
+from app.auth.deps import Identity, require_admin, require_read
+from app.core.db import get_db
+from app.core.errors import ApiError
+from app.core.vocab import AuditAction
+from app.kernel.schemas import (
+    KernelSkillCategoryOut,
+    KernelSkillOut,
+    KernelSkillsOut,
+    SkillCreateIn,
+    SkillDetailOut,
+    SkillFilesOut,
+    SkillUpdateIn,
+    SkillUsageListOut,
+    SkillUsageOut,
+)
+from app.kernel.skill_usage import collect_skill_usage
+
+router = APIRouter(prefix="/kernel", tags=["Kernel · Skills"])
+
+ReadDep = Depends(require_read)
+AdminDep = Depends(require_admin)
+DbDep = Depends(get_db)
+
+#: 技能调用统计最多回溯多少条工具调用事件。
+#:
+#: ★ 为什么要有个上限：这条查询要按 `detail->>'tool'` 过滤，那个字段
+#:   上没有索引（它是 JSONB 内部的一个键），所以它**扫**事件表。
+#:   不设上限的话，"打开技能页"的代价会随历史运行次数线性上升 ——
+#:   而那和"我想看一眼有哪些技能"没有关系。
+#:
+#: 取 20000 的理由：一次扫描的工具调用量级在几十到几百，20000 条覆盖
+#: 大约上百次扫描。超出的部分界面会明说"只统计了最近 N 条"，不假装全量。
+MAX_USAGE_EVENTS = 20_000
+
+
+def _find_skill(name: str):  # noqa: ANN202 - 返回 Skill dataclass
+    """按名字找一篇技能（内置或自定义）。找不到抛 404。"""
+    from app.kernel import skills as skills_mod
+
+    by_name = skills_mod.skills_by_name(skills_mod.all_skills())
+    skill = by_name.get(name)
+    if skill is None:
+        raise ApiError.not_found(f"没有叫 `{name}` 的技能。")
+    return skill
+
+
+@router.get(
+    "/skills",
+    response_model=KernelSkillsOut,
+    summary="技能库清单（load_skill 可加载的速查卡）",
+)
+def list_kernel_skills(_identity: Identity = ReadDep) -> KernelSkillsOut:
+    """列内置 + 自定义技能，按分类分组。
+
+    ★ `read` 级：回的是静态文本清单（名字 + 一句话描述），
+    不含凭据、不改状态、不触发执行。
+
+    ⚠️ 不回 `path`：那是宿主文件系统路径，界面用不到且会泄露部署结构。
+
+    ⚠️ 空分类**照样列出来**：那说明"这一栏本该有东西但打包漏了"，
+    而不是"没有这一栏"。两者在界面上是两回事。
+    """
+    from app.kernel import skills as skills_mod
+
+    items = skills_mod.all_skills()
+    grouped: dict[str, list[dict]] = {}
+    for skill in items:
+        grouped.setdefault(skill.category, []).append(
+            {
+                "name": skill.name,
+                "category": skill.category,
+                "description": skill.description,
+                # ★ 清单里带上来源，前端才能直接判断"这一篇能不能改/删"。
+                #   不带的话，界面要为每一篇再发一次详情请求才知道，
+                #   而那些请求还会把自定义技能的正文一起传回来。
+                "source": getattr(skill, "source", "builtin"),
+                # ★ v0.90：附件个数，界面据此标出"这一篇不只是一段文本"。
+                #   只给个数不给文件名 —— 清单要渲染 31 篇，每篇带一列
+                #   文件名会让响应变胖，而文件名在详情接口里给。
+                "fileCount": len(getattr(skill, "files", ()) or ()),
+            }
+        )
+    for bucket in grouped.values():
+        bucket.sort(key=lambda item: item["name"])
+    return KernelSkillsOut(
+        total=len(items),
+        categories=[
+            KernelSkillCategoryOut(
+                category=category,
+                skills=[KernelSkillOut(**skill) for skill in bucket],
+            )
+            for category, bucket in sorted(grouped.items())
+        ],
+    )
+
+
+@router.get(
+    "/skills/usage",
+    response_model=SkillUsageListOut,
+    summary="技能调用统计（哪几篇真的被 load_skill 拉过）",
+)
+def kernel_skills_usage(_identity: Identity = ReadDep, db: Session = DbDep) -> SkillUsageListOut:
+    """统计每篇技能被 `load_skill` 拉过几次、最后一次是什么时候。
+
+    ## 这个数**证明什么、不证明什么**
+
+    证明：模型请求过这一篇（活动流里有对应的 `tool_call` 事件）。
+    不证明：它读进去了、它照做了、它因此解出了题。
+
+    ★ 所以界面上的措辞必须是「被加载」，不能写「有用」「命中」「采纳」——
+    那是从这个数里推不出来的东西。把它写大一点很好看，但它就是编的。
+
+    ## ⚠️ 路由顺序：这个端点必须注册在 `/skills/{name}` **之前**
+
+    FastAPI 按注册顺序匹配。放后面的话 `GET /kernel/skills/usage` 会先撞上
+    `/skills/{name}`，把 `usage` 当成一个技能名 → 404「没有叫 usage 的技能」。
+    这个失败的形状很坏：端点**在**，只是永远回 404。
+    下面 `list_kernel_skills` 之后紧跟本函数，就是为了这个。
+
+    ## 数据来源
+
+    `activity_events` 里 `type='tool_call'` 且 `detail.tool='load_skill'` 的行。
+    `detail.command` 是模型传的参数 JSON（`{"name": "..."}`），在 Python 侧
+    解出名字 —— 不在 SQL 里解，因为 JSON 内层路径的写法在 PostgreSQL
+    与 SQLite 上是两套语法，写在 SQL 里会让这段只在生产能跑、测试跑不了。
+    """
+    usage = collect_skill_usage(db, limit=MAX_USAGE_EVENTS)
+    items = [
+        SkillUsageOut(
+            name=row.name,
+            loads=row.loads,
+            lastLoadedAt=row.last_loaded_at.isoformat() if row.last_loaded_at else None,
+        )
+        for row in usage.rows
+    ]
+    return SkillUsageListOut(
+        sampledEvents=usage.sampled,
+        truncated=usage.truncated,
+        limit=usage.limit,
+        since=None,
+        items=items,
+    )
+
+
+@router.get(
+    "/skills/{name}",
+    response_model=SkillDetailOut,
+    summary="单篇技能详情（含正文，内置的也回）",
+)
+def get_kernel_skill(name: str, _identity: Identity = ReadDep) -> SkillDetailOut:
+    """看一篇技能的详情。
+
+    ## 内置技能也回正文（2026-10-26 改）
+
+    原实现只给自定义技能回 `body`，内置的回空串，理由写的是
+    「页面不需要全文，回显它也没有用 —— 内置的改不了」。
+
+    那个理由只对了一半。76 篇里 72 篇是内置的，**它们才是决定模型行为
+    的主体**。内置不回正文的效果是：能改的 4 篇看得见，真正在起作用的
+    72 篇在界面上是一片空白 + 一句「改不了」。
+
+    实测踩到的坑正是这个形状：一篇内置技能教了内核里不存在的命令，
+    界面上完全无从发现，只能去 grep 源码。所以「改不了」不该推出
+    「看不见」——**只读**和**不可知**是两件事。
+
+    代价是打开一篇大技能会拉几百 KB（`MAX_SKILL_CHARS` = 24000 截断在
+    `load_skill_text` 那一层，这里是原文）。这可接受：详情是用户主动点开的
+    单篇请求，不是随清单批量下发。
+
+    ⚠️ 区分两种「读不到」：自定义的读不到说明文件出了问题（编辑器要能
+    发现），内置的读不到说明部署包缺文件。两者都回空串 + 让 `lineCount`
+    为 0，界面据此显示「读不到正文」，不假装是空文件。
+    """
+    from app.kernel import skill_store
+
+    skill = _find_skill(name)
+    source = getattr(skill, "source", "builtin")
+    body = ""
+    try:
+        if source == "custom":
+            raw = skill_store.read_custom_skill(name=name, category=skill.category)
+            _, body = skill_store.split_content(raw)
+        else:
+            # ★ 内置：只读查看。回的是含 frontmatter 的原文吗？
+            #   不是 —— 剥掉 frontmatter，因为 name/category/description
+            #   已经结构化成字段了，正文里再出现一遍只会让人以为能改它。
+            raw = skill_store.read_builtin_skill(skill)
+            _, body = skill_store.split_content(raw)
+    except skill_store.SkillWriteError:
+        body = ""  # 读不到就给空，界面显示"读不到正文"
+    return SkillDetailOut(
+        name=skill.name,
+        category=skill.category,
+        description=skill.description,
+        source=source,
+        body=body,
+        lineCount=(body.count("\n") + 1) if body else 0,
+        # ★ v0.90：附件清单直接取发现层的结果（它已经扫过包目录），
+        # 不为这一个字段再读一遍磁盘。
+        files=list(getattr(skill, "files", ()) or ()),
+    )
+
+
+@router.get(
+    "/skills/{name}/files",
+    response_model=SkillFilesOut,
+    summary="一篇自定义技能的全部附件内容（编辑回填用）",
+)
+def get_kernel_skill_files(name: str, _identity: Identity = ReadDep) -> SkillFilesOut:
+    """读回全部附件内容。
+
+    ## 为什么需要这个端点（而不是让详情带内容）
+
+    `PUT /skills/{name}` 的 `files` 是**全量替换**语义：传 `{}` 就是
+    "这篇没有附件"。于是编辑器要"只改正文"时，必须把现有附件内容
+    原样带回去 —— 而它只有**文件名**（详情里只给清单），没有内容。
+
+    没有这个端点，前端只有两条路，都不可接受：
+
+    | 做法 | 后果 |
+    |---|---|
+    | 保存时不带 `files` | 后端收到 `None` = 不动附件 → 正确，但**用户就没法删附件** |
+    | 保存时带 `{}` | 改一个字 → 静默清空全部附件（不报错） |
+
+    有了它，前端拿到真内容 → 用户可以增删改任意附件，且"只改正文"
+    时把原样内容带回去，语义正确。
+
+    ## 为什么一次全给，不分文件
+
+    同上：全量替换语义要求前端**手持全部内容**才能安全保存。
+    按单个文件给的话，没被点开的那些文件编辑器就没有内容，
+    保存时带不回去 —— 又是一个静默删除。
+
+    代价是打开带大附件的技能会拉全部内容，但这有明确上限
+    （`skill_store.MAX_ATTACHMENT_BYTES` = 20 MB / 50 个文件），
+    且比"改一个字删光附件"好得多。
+    """
+    from app.kernel import skill_store
+
+    skill = _find_skill(name)
+    category = skill.category
+    if getattr(skill, "source", "builtin") != "custom":
+        # 内置技能没有可编辑的附件。回 404 而不是空 ——
+        # 空像是"这篇没有附件"，那不是事实（它可能带内置附件）。
+        raise ApiError.not_found(f"`{name}` 是内置技能，没有可编辑的附件。")
+    return SkillFilesOut(files=skill_store.read_custom_attachments(name=name, category=category))
+
+
+@router.post(
+    "/skills",
+    response_model=SkillDetailOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="新建一篇自定义技能",
+)
+def create_kernel_skill(
+    payload: SkillCreateIn,
+    request: Request,
+    identity: Identity = AdminDep,
+    db: Session = DbDep,
+) -> SkillDetailOut:
+    """新建自定义技能（**只写自定义目录**）。
+
+    ★ 留痕：技能正文会进模型上下文，改它能改变智能体行为 ——
+    事后要能回答"这个技能是谁加的"。
+    """
+    from app.kernel import skill_store
+
+    try:
+        skill_store.ensure_custom_root()
+        skill_store.create_or_update_skill(
+            name=payload.name,
+            category=payload.category,
+            description=payload.description,
+            body=payload.body,
+            files=payload.files or None,
+        )
+    except skill_store.SkillWriteError as exc:
+        raise ApiError.validation(str(exc), {"detail": exc.message}) from exc
+
+    audit.record(
+        db,
+        request=audit.from_http(request, identity),
+        action=AuditAction.KERNEL_SKILL_CREATE,
+        summary=f"新建技能 {payload.category}/{payload.name}",
+        detail={
+            "name": payload.name,
+            "category": payload.category,
+            "chars": len(payload.body),
+            "files": sorted(payload.files or {}),
+        },
+    )
+    return SkillDetailOut(
+        name=payload.name,
+        category=payload.category,
+        description=payload.description,
+        source="custom",
+        body=payload.body,
+        lineCount=payload.body.count("\n") + 1,
+        files=sorted(payload.files or {}),
+    )
+
+
+@router.put(
+    "/skills/{name}",
+    response_model=SkillDetailOut,
+    summary="改一篇自定义技能",
+)
+def update_kernel_skill(
+    name: str,
+    payload: SkillUpdateIn,
+    request: Request,
+    identity: Identity = AdminDep,
+    db: Session = DbDep,
+) -> SkillDetailOut:
+    """改自定义技能。
+
+    ⚠️ **分类不可改**：它决定文件在哪，改分类等于"删一个建一个"，
+    那会让"编辑"产生副作用（原文件消失）。换分类请删了重建。
+    """
+    from app.kernel import skill_store
+
+    skill = _find_skill(name)
+    if getattr(skill, "source", "builtin") != "custom":
+        raise ApiError.validation(
+            f"`{name}` 是**内置**技能，不能改。",
+            {"name": "内置技能随代码分发、部署时会被覆盖。想改请新建一篇自定义的。"},
+        )
+    try:
+        skill_store.create_or_update_skill(
+            name=name,
+            category=skill.category,
+            description=payload.description,
+            body=payload.body,
+            # ★ v0.90：`None` = 不动附件；`{}` = 清空。
+            # 这个区分必须一路上传到这里，不能在路由层折叠成 `{}`
+            # （折叠的后果是"只改一个字 → 附件全没了"）。
+            files=payload.files,
+            must_exist=True,
+        )
+    except skill_store.SkillWriteError as exc:
+        raise ApiError.validation(str(exc), {"detail": exc.message}) from exc
+
+    audit.record(
+        db,
+        request=audit.from_http(request, identity),
+        action=AuditAction.KERNEL_SKILL_UPDATE,
+        summary=f"更新技能 {skill.category}/{name}",
+        detail={
+            "name": name,
+            "category": skill.category,
+            "chars": len(payload.body),
+            "files": None if payload.files is None else sorted(payload.files),
+        },
+    )
+    return SkillDetailOut(
+        name=name,
+        category=skill.category,
+        description=payload.description,
+        source="custom",
+        body=payload.body,
+        lineCount=payload.body.count("\n") + 1,
+        files=(
+            sorted(payload.files)
+            if payload.files is not None
+            else list(getattr(_find_skill(name), "files", ()) or ())
+        ),
+    )
+
+
+@router.delete(
+    "/skills/{name}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="删一篇自定义技能",
+)
+def delete_kernel_skill(
+    name: str,
+    request: Request,
+    identity: Identity = AdminDep,
+    db: Session = DbDep,
+) -> None:
+    """删自定义技能。
+
+    内置的删不掉 —— 它随代码分发，删了下次部署又回来，
+    而"删了又回来"比"删不掉"更让人困惑。
+    """
+    from app.kernel import skill_store
+
+    skill = _find_skill(name)
+    try:
+        skill_store.delete_skill(name=name, category=skill.category)
+    except skill_store.SkillWriteError as exc:
+        raise ApiError.validation(str(exc), {"detail": exc.message}) from exc
+
+    audit.record(
+        db,
+        request=audit.from_http(request, identity),
+        action=AuditAction.KERNEL_SKILL_DELETE,
+        summary=f"删除技能 {skill.category}/{name}",
+        detail={"name": name, "category": skill.category},
+    )
+
+
+__all__ = ["router"]
+
+
+@router.post("/skills/import", summary="导入技能压缩包（zip）")
+async def import_kernel_skill(
+    request: Request,
+    file: Annotated[UploadFile, File(description="包含 SKILL.md 的 zip")],
+    identity: Identity = AdminDep,
+    db: Session = DbDep,
+) -> dict[str, str]:
+    """只接受文本附件；路径穿越/超限由导入器拒绝。"""
+    from app.kernel import skill_import, skill_store
+
+    data = await file.read()
+    try:
+        result = skill_import.import_zip(data)
+    except skill_store.SkillWriteError as exc:
+        raise ApiError.validation(str(exc), {"detail": exc.message}) from exc
+
+    audit.record(
+        db,
+        request=audit.from_http(request, identity),
+        action=AuditAction.KERNEL_SKILL_CREATE,
+        summary=f"导入技能 {result['category']}/{result['name']}",
+        detail={"files": result["files"], "source": "zip"},
+    )
+    return result

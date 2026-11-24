@@ -1,0 +1,221 @@
+@import '@fontsource-variable/geist';
+@import '@fontsource-variable/jetbrains-mono';
+@import '@fontsource-variable/noto-sans-sc';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ==========================================================================
+   Suvex 2 — Editorial Studio Design Tokens
+   Porcelain & Warm Stone (Light Default) + Refined Obsidian (Dark Mode)
+   ========================================================================== */
+
+:root,
+[data-theme='light'] {
+  --bg-canvas: #faf9f7;
+  --bg-surface: #ffffff;
+  --bg-subtle: #f4f2ee;
+  --bg-wash: #ebe8e1;
+
+  --text-primary: #141413;
+  --text-secondary: #55534c;
+  --text-muted: #8a867d;
+
+  --border-default: #e6e2da;
+  --border-strong: #d3cec3;
+  --border-subtle: #efece6;
+
+  --accent: #4f46e5;
+  --accent-soft: #eef2ff;
+  --accent-ink: #3730a3;
+
+  --shadow-card: 0 1px 2px rgba(20, 20, 19, 0.04), 0 0 0 1px rgba(20, 20, 19, 0.02);
+  --shadow-elevated: 0 8px 24px -6px rgba(20, 20, 19, 0.08), 0 2px 6px -1px rgba(20, 20, 19, 0.04);
+  --shadow-dialog: 0 24px 60px -12px rgba(20, 20, 19, 0.18), 0 0 0 1px rgba(20, 20, 19, 0.06);
+
+  color-scheme: light;
+}
+
+[data-theme='dark'] {
+  --bg-canvas: #0c0c0e;
+  --bg-surface: #141417;
+  --bg-subtle: #111114;
+  --bg-wash: #1d1d22;
+
+  --text-primary: #f4f3ef;
+  --text-secondary: #a4a29b;
+  --text-muted: #6e6c66;
+
+  --border-default: #25252b;
+  --border-strong: #34343d;
+  --border-subtle: #1b1b20;
+
+  --accent: #818cf8;
+  --accent-soft: rgba(99, 102, 241, 0.14);
+  --accent-ink: #c7d2fe;
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-elevated: 0 10px 28px -6px rgba(0, 0, 0, 0.55);
+  --shadow-dialog: 0 28px 64px -12px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(255, 255, 255, 0.06);
+
+  color-scheme: dark;
+}
+
+@layer base {
+  html {
+    background-color: var(--bg-canvas);
+    color: var(--text-primary);
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background-color: var(--bg-canvas);
+    color: var(--text-primary);
+    font-family:
+      'Geist Variable', 'Noto Sans SC Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+      sans-serif;
+  }
+
+  ::selection {
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Subtle architectural grid background for landing & auth canvases */
+.editorial-grid {
+  background-image:
+    linear-gradient(to right, var(--border-subtle) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--border-subtle) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+/* Quiet thin scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* Editorial Markdown Prose */
+.editorial-prose {
+  font-size: 0.9375rem;
+  line-height: 1.72;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+.editorial-prose > *:first-child {
+  margin-top: 0;
+}
+.editorial-prose > *:last-child {
+  margin-bottom: 0;
+}
+.editorial-prose h1,
+.editorial-prose h2,
+.editorial-prose h3,
+.editorial-prose h4 {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  margin-top: 1.4em;
+  margin-bottom: 0.55em;
+}
+.editorial-prose h1 {
+  font-size: 1.35rem;
+}
+.editorial-prose h2 {
+  font-size: 1.12rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.editorial-prose h3 {
+  font-size: 1rem;
+}
+.editorial-prose p {
+  margin: 0.65em 0;
+}
+.editorial-prose ul,
+.editorial-prose ol {
+  margin: 0.65em 0;
+  padding-left: 1.35em;
+}
+.editorial-prose ul {
+  list-style: disc;
+}
+.editorial-prose ol {
+  list-style: decimal;
+}
+.editorial-prose li {
+  margin: 0.25em 0;
+}
+.editorial-prose blockquote {
+  margin: 0.9em 0;
+  padding: 0.5rem 0.9rem;
+  border-left: 2px solid var(--accent);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  border-radius: 0 6px 6px 0;
+}
+.editorial-prose code {
+  font-family: 'JetBrains Mono Variable', ui-monospace, monospace;
+  font-size: 0.84em;
+  padding: 0.14em 0.38em;
+  border-radius: 5px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+}
+.editorial-prose pre {
+  margin: 0.85em 0;
+  padding: 0.9rem 1rem;
+  border-radius: 8px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-default);
+  overflow-x: auto;
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+.editorial-prose pre code {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: inherit;
+}
+.editorial-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.9em 0;
+  font-size: 0.875rem;
+}
+.editorial-prose th,
+.editorial-prose td {
+  border: 1px solid var(--border-default);
+  padding: 0.45rem 0.65rem;
+  text-align: left;
+}
+.editorial-prose th {
+  background: var(--bg-subtle);
+  font-weight: 500;
+}
+.editorial-prose a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
