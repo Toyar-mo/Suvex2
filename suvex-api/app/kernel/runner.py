@@ -6616,6 +6616,11 @@ async def solve_in_sandbox(
         revivals = 0
         #: 每个工具**连续**失败了几次（成功一次就清零）。见 `TOOL_FAILURE_*`。
         failure_streak: dict[str, int] = {}
+        #: 靶机环境故障早停跟踪器（仅 CTF 夺旗目标生效：捕获 NoNewPrivs=1 导致 /readflag SUID 失效）。
+        from app.kernel.env_fault import EnvFaultTracker
+
+        is_ctf_goal = getattr(spec, "goal", "captureFlag") in (None, "", "captureFlag")
+        env_fault = EnvFaultTracker() if is_ctf_goal else None
         for turn in range(1, spec.max_turns + 1):
             outcome.turns = turn
             # ★★ 沙箱已经没了 → 立刻中止（v0.41）。
@@ -7147,6 +7152,8 @@ async def solve_in_sandbox(
                     _clip(f"{name} {command}", 200),
                     {"tool": name, "command": command, "output": result},
                 )
+                if env_fault is not None:
+                    env_fault.observe(turn=turn, command=command, output=result)
 
             recent.append(
                 {
@@ -7154,6 +7161,35 @@ async def solve_in_sandbox(
                     "content": _format_action_results(completed, dropped) + truncation_note,
                 }
             )
+            # ★★ 靶机环境故障两阶段早停（如 K8s Pod NoNewPrivs=1 导致 /readflag SUID 失效）。
+            if env_fault is not None:
+                fault = env_fault.evaluate(
+                    turn=turn, has_candidates=bool(outcome.candidates)
+                )
+                if fault.action == "warn":
+                    log.append(f"[turn {turn}] {fault.reason}")
+                    notify(
+                        "blocked",
+                        fault.reason,
+                        {"reason": fault.reason, "faultKind": fault.fault_kind},
+                    )
+                    recent.append({"role": "user", "content": fault.nudge})
+                elif fault.action == "abort":
+                    outcome.error = fault.reason
+                    log.append(f"[turn {turn}] {fault.reason}")
+                    notify(
+                        "failed",
+                        fault.reason,
+                        {"reason": fault.reason, "faultKind": fault.fault_kind},
+                    )
+                    outcome.transcript = "\n\n".join(log)
+                    logger.warning(
+                        "[turn %d] 触发靶机环境故障早停（%s）：%s",
+                        turn,
+                        fault.fault_kind,
+                        fault.reason,
+                    )
+                    return outcome
             # 连续失败到阈值 → 把"换路子"的要求**当成一条新消息**塞回去。
             # 用 role="user" 有实测依据：模型对"刚说的"遵从度高于系统提示词
             # 里一直挂着的那句（见 `_final_stretch_note` 的同一条理由）。
