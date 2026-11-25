@@ -885,31 +885,51 @@ async def _call_model(
     if tools and stream_fn is not None and _supports_param(stream_fn, "tools"):
         stream_kwargs["tools"] = tools
     stream_iter = gateway.chat_stream(messages, **stream_kwargs).__aiter__()
+    interrupt_task: asyncio.Task[Any] | None = (
+        asyncio.create_task(interrupt_bus.wait_for_interrupt(session_id))
+        if session_id
+        else None
+    )
+    interrupted_mid_stream = False
     try:
-        # ★ v1.67：逐帧"空闲超时"。不再直接 `async for delta in ...`，而是手动
-        #   驱动迭代器、给每次 `__anext__` 套一个 `asyncio.wait_for(..., 空闲秒数)`。
-        #   这样"上游挂着连接却永远不吐正文"（只发 `: keepalive` 注释，被
-        #   `runner._iter_sse` 跳过）会在 `STREAM_IDLE_SECONDS` 后抛
-        #   `asyncio.TimeoutError`，走下面 `except` 的"没吐过字就退回非流式"；
-        #   而非流式也有 httpx 的 `DEFAULT_LLM_TIMEOUT=180` 兜底，最终会失败并被
-        #   `_run_guarded_active` 记成 `interrupted`、交给 resumer 接手 ——
-        #   绝不无限阻塞（对应 CyberStrikeAI 的 bounded agent waits）。
-        #   每个**正文**增量都会重新计时，所以真在吐字的慢模型不会误伤。
+        # ★ v1.67 + v2.2：逐帧「空闲超时」+ 事件驱动抢占式中断（含 TTFT 零吐字阶段）。
+        #   用 `asyncio.wait(FIRST_COMPLETED)` 同时等待下一帧与中断事件：
+        #   用户按下停止/插话时 <1ms 立即跳出并关闭上游 httpx SSE 连接，
+        #   不再卡在长思考/TTFT 阶段白等。
         while True:
-            try:
-                delta = await asyncio.wait_for(
-                    stream_iter.__anext__(),
-                    timeout=STREAM_IDLE_SECONDS or None,
-                )
-            except StopAsyncIteration:
+            if session_id and interrupt_bus.should_break(session_id):
+                interrupted_mid_stream = True
                 break
-            except TimeoutError:
+            next_task: asyncio.Task[Any] = asyncio.create_task(stream_iter.__anext__())
+            wait_set: set[asyncio.Task[Any]] = {next_task}
+            if interrupt_task is not None:
+                wait_set.add(interrupt_task)
+            done, _ = await asyncio.wait(
+                wait_set,
+                timeout=STREAM_IDLE_SECONDS or None,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                next_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await next_task
                 raise ChatEngineError(
                     f"模型流 {STREAM_IDLE_SECONDS}s 无正文增量（上游卡死）"
                 ) from None
-            # ★ v1.25：每个增量查一次"用户有没有按中断"。按停得**立刻**
-            #   生效 —— 这是"中断并继续"与"插话"的根本区别（后者要等下一轮）。
+            if interrupt_task is not None and interrupt_task in done:
+                if not next_task.done():
+                    next_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await next_task
+                interrupted_mid_stream = True
+                break
+            try:
+                delta = next_task.result()
+            except StopAsyncIteration:
+                break
+            # ★ v1.25：每个增量再核一次中断标记，确保紧邻帧也不多吐字。
             if session_id and interrupt_bus.should_break(session_id):
+                interrupted_mid_stream = True
                 break
             collected.append(delta)
             safe = buffer.feed(delta)
@@ -917,20 +937,28 @@ async def _call_model(
                 pushed = True
                 await _emit_delta(emit, safe)
         tail = buffer.flush()
-        if tail and not (session_id and interrupt_bus.should_break(session_id)):
+        if tail and not interrupted_mid_stream and not (session_id and interrupt_bus.should_break(session_id)):
             pushed = True
             await _emit_delta(emit, tail)
     except Exception:  # noqa: BLE001
-        if pushed:
+        if interrupted_mid_stream or (session_id and interrupt_bus.should_break(session_id)):
+            # 用户已主动打断：严禁退回非流式重跑一整次模型请求。
+            pass
+        elif pushed:
             # 已经吐出字了 —— 不能重来，只能如实失败。
             raise
-        _log.info("流式调模型失败，退回非流式重试一次", exc_info=True)
-        return _with_native_actions(
-            await _gateway_chat(gateway, messages, system=system, tools=tools)
-        )
+        else:
+            _log.info("流式调模型失败，退回非流式重试一次", exc_info=True)
+            return _with_native_actions(
+                await _gateway_chat(gateway, messages, system=system, tools=tools)
+            )
     finally:
+        if interrupt_task is not None and not interrupt_task.done():
+            interrupt_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await interrupt_task
         # ★ v1.67：无论正常结束、break 还是超时/异常，都必须关掉底层生成器，
-        #   否则 httpx 那条 SSE 连接会泄漏（超时场景尤其关键 —— 上游还挂着连接）。
+        #   否则 httpx 那条 SSE 连接会泄漏（超时/中断场景尤其关键）。
         aclose = getattr(stream_iter, "aclose", None)
         if aclose is not None:
             try:
@@ -3629,6 +3657,34 @@ def _tool_output_emitter(emit: Emit | None, name: str) -> Any:
     return _send
 
 
+async def _await_cancellable_by_stop(coro: Any, session_id: str | None) -> tuple[Any, bool]:
+    """执行工具协程并并行监听会话「彻底停止」信号；停止时立刻 cancel 工具任务。"""
+    if not session_id:
+        return await coro, False
+    if interrupt_bus.stop_requested(session_id):
+        if inspect.iscoroutine(coro):
+            coro.close()
+        return None, True
+    work_task = asyncio.create_task(coro)
+    stop_task = asyncio.create_task(interrupt_bus.wait_for_stop(session_id))
+    try:
+        done, _ = await asyncio.wait(
+            {work_task, stop_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if stop_task in done and not work_task.done():
+            work_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await work_task
+            return None, True
+        return work_task.result(), False
+    finally:
+        if not stop_task.done():
+            stop_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await stop_task
+
+
 async def _execute_tool(
     ctx: _ToolContext,
     name: str,
@@ -3647,6 +3703,10 @@ async def _execute_tool(
        它内部自己 commit，因为扫描是**独立于对话**的实体 —— 建出来了就该
        存在，不该因为对话后面出错而被回滚）。
     """
+    session_id = getattr(getattr(ctx, "session", None), "id", None)
+    if session_id and interrupt_bus.stop_requested(session_id):
+        return "[工具已被用户手动中断，未执行]", True
+
     if (
         ctx.allowed_tools is not None
         and name not in ctx.allowed_tools
@@ -3692,22 +3752,36 @@ async def _execute_tool(
                 if payload:
                     await on_progress(payload)
 
-            text = await ctx.mcp.call(binding, args, on_progress=_mcp_progress)
+            text, was_stopped = await _await_cancellable_by_stop(
+                ctx.mcp.call(binding, args, on_progress=_mcp_progress),
+                session_id,
+            )
+            if was_stopped:
+                return f"[MCP 工具 `{name}` 已被用户手动中断]", True
         except mcp_tools.McpToolError as exc:
             return f"失败：{exc}", True
         # MCP 的 `isError=true` 由内核渲染成「MCP 工具返回错误：…」，
         # 不是我们约定的「失败：」前缀。两者都算失败，界面上才会标红。
         return text, text.startswith(("失败：", "MCP 工具返回错误："))
     try:
-        # ★ v1.92：`run_shell` 走流式实现 —— 边跑边把 stdout 推到 SSE，
-        #   界面上的运行卡才有"输出在涨"可看。其余工具仍是整块返回。
-        #   最终文本与内核版逐字一致（同一套截断/超时说明）。
+        # ★ v1.92 + v2.2：`run_shell` 走流式实现并内置容器内进程组强杀；
+        #   其余工具通过 `_await_cancellable_by_stop` 接入毫秒级抢占取消。
         if name == "run_shell" and on_output is not None:
             text = await chat_sandbox.stream_run_shell(ctx, args, on_output)
         elif name == "browser" and on_output is not None:
-            text = await chat_sandbox.tool_browser(ctx, args, on_output)
+            text, was_stopped = await _await_cancellable_by_stop(
+                chat_sandbox.tool_browser(ctx, args, on_output),
+                session_id,
+            )
+            if was_stopped:
+                return "[浏览器工具执行已被用户手动中断]", True
         else:
-            text = await _with_heartbeat(impl(ctx, args), on_progress)
+            text, was_stopped = await _await_cancellable_by_stop(
+                _with_heartbeat(impl(ctx, args), on_progress),
+                session_id,
+            )
+            if was_stopped:
+                return f"[工具 `{name}` 执行已被用户手动中断]", True
     except _ToolDenied as exc:
         return f"失败：{exc}", True
     except Exception as exc:  # noqa: BLE001 - 工具内部崩了不该毁掉整轮对话
@@ -4957,6 +5031,10 @@ async def run_turn(
             return result
 
         for name, args in actions:
+            if interrupt_bus.stop_requested(session.id):
+                result.stopped = True
+                interrupt_bus.clear(session.id)
+                return result
             # ── 人工审批闸门 ──────────────────────────────────
             #
             # ★ 判据是 `CONSEQUENTIAL_TOOL_NAMES`（与提示词里那段用的是
@@ -5044,6 +5122,13 @@ async def run_turn(
             result.messages.append(tool_message)
             db.commit()
             await _emit_message(emit, tool_message)
+
+            # ★ v2.2：工具执行期间用户点了「停止」——半截输出与中断标记已干净落库，
+            #   立刻收尾退出整轮，不再跑后续动作或下一轮模型调用。
+            if interrupt_bus.stop_requested(session.id):
+                result.stopped = True
+                interrupt_bus.clear(session.id)
+                return result
 
             # ★ v1.49：原地打转检测 —— 同一条命令（工具+参数完全相同）
             #   连续执行 MAX_REPEATED_ACTIONS 次 = 只可能在空转。
@@ -5625,6 +5710,10 @@ async def resume_approved(
             return result
 
         for name, args in actions:
+            if interrupt_bus.stop_requested(session.id):
+                result.stopped = True
+                interrupt_bus.clear(session.id)
+                return result
             if _must_approve(session, name, gate_on):
                 pending = chat_service.mark_awaiting_approval(
                     db, session=session, tool_name=name, tool_args=args
@@ -5649,6 +5738,10 @@ async def resume_approved(
             )
             result.messages.append(tool_message)
             db.commit()
+            if interrupt_bus.stop_requested(session.id):
+                result.stopped = True
+                interrupt_bus.clear(session.id)
+                return result
 
     return result
 

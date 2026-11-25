@@ -672,6 +672,7 @@ const LiveStreamCard = memo(function LiveStreamCard({
   reasoning,
   toolOut,
   text,
+  stopping,
   onStop,
 }: {
   phase: string | null
@@ -682,6 +683,7 @@ const LiveStreamCard = memo(function LiveStreamCard({
   reasoning: string
   toolOut: string
   text: string
+  stopping?: boolean
   onStop: () => void
 }) {
   const termRef = useRef<HTMLPreElement | null>(null)
@@ -723,9 +725,9 @@ const LiveStreamCard = memo(function LiveStreamCard({
             {elapsedSec.toFixed(1)}s
             {charCount > 0 ? ` · ${charCount} 字` : ''}
           </span>
-          <Button size="sm" variant="danger" onClick={onStop}>
-            <Square className="h-3 w-3" />
-            停止执行
+          <Button size="sm" variant="danger" loading={stopping} disabled={stopping} onClick={onStop}>
+            {!stopping && <Square className="h-3 w-3" />}
+            {stopping ? '正在停止…' : '停止执行'}
           </Button>
         </div>
       </div>
@@ -850,6 +852,7 @@ export function ChatPage() {
   const [liveToolOut, setLiveToolOut] = useState('')
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [resumingSessionId, setResumingSessionId] = useState<string | null>(null)
+  const [stoppingSessionId, setStoppingSessionId] = useState<string | null>(null)
   const [showScrollBottom, setShowScrollBottom] = useState(false)
 
   // Authoritative current-session refs & request epoch to eliminate cross-session race conditions
@@ -906,6 +909,7 @@ export function ChatPage() {
 
   const streaming = Boolean(activeId && streamingSessionId === activeId)
   const resuming = Boolean(activeId && resumingSessionId === activeId)
+  const stopping = Boolean(activeId && stoppingSessionId === activeId)
   // Strict session-scoped detail: NEVER render or inspect stale detail from a previously selected session
   const currentDetail = detail && detail.id === activeId ? detail : null
 
@@ -1067,6 +1071,12 @@ export function ChatPage() {
         (currentDetail != null && turns.some((t) => t.status === 'running'))),
   )
 
+  // Auto-clear stopping indicator once session exits running/streaming state
+  useEffect(() => {
+    if (stopping && !streaming && !isServerRunning && !streamPhase) {
+      setStoppingSessionId((cur) => (cur === activeId ? null : cur))
+    }
+  }, [stopping, streaming, isServerRunning, streamPhase, activeId])
   // Abort active client fetch cleanly on unmount (server turn stays durable & keeps running)
   useEffect(() => {
     return () => {
@@ -1897,14 +1907,23 @@ export function ChatPage() {
   }
 
   const handleStop = async () => {
-    if (!activeId) return
+    const sid = activeId
+    if (!sid || stoppingSessionId === sid) return
+    setStoppingSessionId(sid)
+    setStreamPhase('正在强制中断模型流并终止运行中的沙箱进程…')
     try {
-      await api.interruptChat(activeId, 'stop', '用户手动停止')
-      abortRef.current?.abort()
-      push('已请求中断本轮执行', 'default')
+      await api.interruptChat(sid, 'stop', '用户手动停止')
+      push('已发送强制停止信号', 'default')
     } catch {
       abortRef.current?.abort()
     }
+    // 后端抢占式取消通常在 <200ms 内发回 done 帧并收尾；兜底 2.5s 后主动同步状态，避免网络抖动卡住按钮
+    window.setTimeout(() => {
+      setStoppingSessionId((cur) => (cur === sid ? null : cur))
+      if (activeIdRef.current === sid) {
+        void Promise.all([loadDetail(sid, { silent: true }), loadSessions()])
+      }
+    }, 2500)
   }
 
   const handleApprove = async (messageId: string, approve: boolean) => {
@@ -2291,6 +2310,7 @@ export function ChatPage() {
                 reasoning={streamReasoning}
                 toolOut={liveToolOut}
                 text={streamText}
+                stopping={stopping}
                 onStop={handleStop}
               />
             )}
@@ -2467,9 +2487,16 @@ export function ChatPage() {
                     Enter 发送 · Shift+Enter 换行
                   </span>
                   {(streaming || isServerRunning) && !input.trim() ? (
-                    <Button variant="danger" size="sm" onClick={handleStop} className="h-8 px-3">
-                      <Square className="h-3 w-3" />
-                      停止
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      loading={stopping}
+                      disabled={stopping}
+                      onClick={handleStop}
+                      className="h-8 px-3"
+                    >
+                      {!stopping && <Square className="h-3 w-3" />}
+                      {stopping ? '正在停止…' : '停止'}
                     </Button>
                   ) : (
                     <Button

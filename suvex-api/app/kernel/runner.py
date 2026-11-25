@@ -2094,28 +2094,28 @@ class SandboxContainer:
         *,
         timeout: float = DEFAULT_SHELL_TIMEOUT,
         on_chunk: Any = None,
+        cancel_waiter: Any = None,
     ) -> CommandResult:
-        """与 `shell()` 同一条命令语义，但**边跑边把输出交给 `on_chunk`**。
+        """与 `shell()` 同一条命令语义，但**边跑边把输出交给 `on_chunk`**，并支持抢占式取消。
 
         `on_chunk` 可以是同步或异步函数；每读到一块（≤4 KB）调用一次。
-        返回值仍是完整的 `CommandResult`（`stderr` 合并在 `stdout` 里，
-        因为流式只有一条管道）—— 调用方拿它做最终截断与错误判断，
-        与 `shell()` 的结果口径一致。
-
-        ## 为什么单独一个方法，而不是把 `shell()` 改成流式
-
-        `shell()` 被解题、扫描、工具链大量复用；给它加异步回调会把每个
-        调用点都拖进异步世界。对话与浏览器的"实时感"是新增需求，用新方法
-        承接，旧路径零改动。
-
-        ## 超时
-
-        容器内 `timeout --signal=KILL` 是**真实**的终止机制（客户端断开
-        不会杀容器内进程）。外层再设 `timeout+30` 只是兜底：容器里没有
-        `timeout` 二进制时才会走到。
+        当 `cancel_waiter`（一个等待中断事件的协程/Future）触发时，立刻：
+        1. 向容器内该次 exec 对应的进程组发 `SIGTERM` -> 150ms -> `SIGKILL`，
+           防止 `sleep`/`sqlmap`/`nmap` 等子进程在容器内残存为僵尸；
+        2. 杀掉宿主机 `docker exec` 子进程；
+        3. 保留已读到的半截输出并返回 `exit_code=130`（标准用户中断码）。
         """
         import asyncio
+        import uuid
 
+        exec_tag = uuid.uuid4().hex[:10]
+        pid_file = f"/tmp/.svx_exec_{exec_tag}.pid"
+        # 用独立 sh 写下本 exec 会话的 PID/PGID（runc exec 默认新开进程组）再 exec timeout
+        wrapped_cmd = (
+            f"echo $$ > {pid_file}; "
+            f"trap 'rm -f {pid_file}' EXIT; "
+            f"exec timeout --signal=KILL {int(timeout)} bash -lc \"$1\""
+        )
         argv = [
             "docker",
             "exec",
@@ -2123,11 +2123,10 @@ class SandboxContainer:
             "-e",
             "TERM=dumb",
             self.name,
-            "timeout",
-            "--signal=KILL",
-            str(int(timeout)),
-            "bash",
-            "-lc",
+            "sh",
+            "-c",
+            wrapped_cmd,
+            "--",
             command,
         ]
         proc = await asyncio.create_subprocess_exec(
@@ -2140,27 +2139,97 @@ class SandboxContainer:
         deadline = loop.time() + timeout + 30
         parts: list[str] = []
         timed_out = False
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                timed_out = True
-                break
+        cancelled_by_user = False
+
+        async def _kill_in_container() -> None:
+            kill_script = (
+                f"p=$(cat {pid_file} 2>/dev/null || true); rm -f {pid_file}; "
+                'if [ -n "$p" ]; then '
+                'kill -TERM -- -"$p" "$p" 2>/dev/null || true; '
+                'pkill -TERM -P "$p" 2>/dev/null || true; '
+                'sleep 0.15; '
+                'kill -KILL -- -"$p" "$p" 2>/dev/null || true; '
+                'pkill -KILL -P "$p" 2>/dev/null || true; '
+                'fi'
+            )
             try:
-                chunk = await asyncio.wait_for(proc.stdout.read(4096), remaining)
-            except TimeoutError:
-                timed_out = True
-                break
-            if not chunk:
-                break
-            text = chunk.decode("utf-8", "replace")
-            if not text:
-                continue
-            parts.append(text)
-            if on_chunk is not None:
-                maybe = on_chunk(text)
-                if inspect.isawaitable(maybe):
-                    await maybe
+                killer = await asyncio.create_subprocess_exec(
+                    "docker",
+                    "exec",
+                    self.name,
+                    "sh",
+                    "-c",
+                    kill_script,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await asyncio.wait_for(killer.wait(), timeout=3.0)
+            except Exception:  # noqa: BLE001 - 容器可能已退出或重启，不阻断取消收尾
+                pass
+
+        cancel_task: asyncio.Task[Any] | None = (
+            asyncio.create_task(cancel_waiter) if cancel_waiter is not None else None
+        )
+        try:
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                if cancel_task is not None and cancel_task.done():
+                    cancelled_by_user = True
+                    break
+
+                read_task = asyncio.create_task(proc.stdout.read(4096))
+                wait_set: set[asyncio.Task[Any]] = {read_task}
+                if cancel_task is not None:
+                    wait_set.add(cancel_task)
+                done, _ = await asyncio.wait(
+                    wait_set,
+                    timeout=remaining,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if not done:
+                    read_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await read_task
+                    timed_out = True
+                    break
+                if cancel_task is not None and cancel_task in done:
+                    if not read_task.done():
+                        read_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await read_task
+                    cancelled_by_user = True
+                    break
+
+                chunk = read_task.result()
+                if not chunk:
+                    break
+                text = chunk.decode("utf-8", "replace")
+                if not text:
+                    continue
+                parts.append(text)
+                if on_chunk is not None:
+                    maybe = on_chunk(text)
+                    if inspect.isawaitable(maybe):
+                        await maybe
+        finally:
+            if cancel_task is not None and not cancel_task.done():
+                cancel_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await cancel_task
+
+        if cancelled_by_user:
+            await _kill_in_container()
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
+            return CommandResult(exit_code=130, stdout="".join(parts), stderr="")
+
         if timed_out:
+            await _kill_in_container()
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
         code = await proc.wait()

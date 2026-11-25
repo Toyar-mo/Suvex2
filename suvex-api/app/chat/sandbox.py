@@ -1039,19 +1039,39 @@ async def stream_run_shell(
             )
         command = f"cd {shlex.quote(raw_cwd)} && {command}"
 
+    from app.chat import interrupts as interrupt_bus
     from app.chat import scope as chat_scope
 
     blocked = chat_scope.reject_reason(ctx, text=command, tool="run_shell")
     if blocked:
         return blocked
 
+    session_id = getattr(getattr(ctx, "session", None), "id", None)
+    if session_id and interrupt_bus.stop_requested(session_id):
+        return "[命令已被用户手动中断，未执行]"
+
     sandbox = await asyncio.to_thread(get_sandbox, ctx.session)
     blocked_net = await asyncio.to_thread(_apply_network_guard, ctx, sandbox)
     if blocked_net:
         return blocked_net
-    # ★ 真正的执行与分块在 `SandboxContainer.stream_shell`：浏览器复用
-    #   同一个方法，两条路径的输出口径不会漂。
-    result = await sandbox.stream_shell(command, timeout=timeout, on_chunk=on_chunk)
+    # ★ 真正的执行与分块在 `SandboxContainer.stream_shell`：同时接入抢占式停止信号，
+    #   用户点停止时 <200ms 杀掉容器内进程组并保留已产生的半截输出。
+    cancel_waiter = interrupt_bus.wait_for_stop(session_id) if session_id else None
+    result = await sandbox.stream_shell(
+        command,
+        timeout=timeout,
+        on_chunk=on_chunk,
+        cancel_waiter=cancel_waiter,
+    )
+    if result.exit_code == 130 and session_id and interrupt_bus.stop_requested(session_id):
+        partial = (result.stdout or "").strip()
+        if len(partial) > runner.MAX_TOOL_OUTPUT_CHARS:
+            partial = runner._clip_both_ends(partial, runner.MAX_TOOL_OUTPUT_CHARS)
+        return (
+            f"{partial}\n\n[命令执行已被用户手动中断，容器内进程已立即终止]"
+            if partial
+            else "[命令执行已被用户手动中断，容器内进程已立即终止]"
+        )
     if result.exit_code == 124:
         return f"命令超时（{timeout} 秒）已被容器内 timeout 终止。\n{result.stdout}"
     out = result.stdout

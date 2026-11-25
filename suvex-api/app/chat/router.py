@@ -1074,8 +1074,8 @@ def interrupt(
         chat_interrupts.request_stop(session_id)
         return {
             "mode": "stop",
-            "status": "scheduled",
-            "message": "已请求停止：当前步骤结束（若正在跑工具，等它返回）后这一轮就结束。",
+            "status": "stopping",
+            "message": "已触发即时停止：正在中断模型流并终止运行中的沙箱进程…",
         }
 
     chat_interrupts.request_continue(session_id, note)

@@ -1,37 +1,19 @@
-"""运行中打断：让用户**在模型跑着的时候**暂停它、补一句话、然后接着跑（v1.25）。
+"""运行中打断：支持**毫秒级抢占式停止**与**中断并继续**（v2.2 升级）。
 
-## 为什么不能靠"插话"（`interject`）
+## 两种中断语义
 
-`interject` 现在写入 user 消息后还会发 `steer` 信号：流式输出处会停，
-工具执行中仍等工具返回（不砍断已产生副作用的命令）。用户看到的
-是「我让它停，它还在那儿写」。（CyberStrikeAI 把这两件事分得很清楚：
-插话 = 排队；中断并继续 = 真的按停当前输出再合并上下文。）
-
-## 本模块只做一件事：**跨线程的中断信号**
-
-`run_turn` 跑在一个 worker 线程里（`stream.py` 用 `asyncio.to_thread` 之外的
-task + 同步 DB session），而打断请求来自另一个 HTTP 请求。两者之间唯一
-安全的通信方式就是进程内的一个小字典 + 锁 —— 本项目是**单 worker**
-（`suvex-api.service` 的 uvicorn 没有 `--workers`），因此进程内状态跨请求可见。
-⚠️ 哪天加 `--workers>1`，这里必须换成 Redis/DB（与 `chat/sandbox.py` 同一个前提）。
-
-## 两种中断
-
-- **继续**（`request_continue`）：带一句可选说明。引擎在当前流式输出处停下，
-  把已产出的正文落库，再把说明作为一条 user 消息注入，然后继续下一轮。
-- **停止**（`request_stop`）：引擎在下一个检查点退出这一轮，状态落 `cancelled`
-  （**不是** `interrupted` —— 后者会被后台 `resumer` 自动接手，而"用户说停"
-  的意思恰恰是别再自动跑）。
-
-## 检查点在哪（用户看得见的时效）
-
-- 流式输出中：**每个增量**都查一次 → 立即停在当前句。
-- 工具执行中：查不到（我们是在等一个阻塞的子进程）→ **等这个工具返回**
-  才生效。这一点必须在界面上说实话，否则用户会以为"点了没反应"。
+- **停止（`request_stop`）**：抢占式立即终止。通过跨线程 `asyncio.Event` 唤醒机制，
+  在 <1ms 内通知正在等待的模型流（含 TTFT 首字思考阶段）、运行中的 `run_shell` 沙箱
+  进程组（先容器内 `SIGTERM` 进程组再 `SIGKILL` + 杀本地 `docker exec`）以及 MCP/HTTP
+  工具，保留已产出的半截输出并写入 `[已被用户手动中断]` 后将本轮落为 `cancelled`
+  （后台 `resumer` 不会自动接手）。
+- **继续（`request_continue`） / 插话（`request_steer`）**：立刻唤醒并打断当前
+  流式模型输出（不砍断已产生副作用的运行中工具），下一轮把用户补充并入上下文继续推进。
 """
 
 from __future__ import annotations
 
+import asyncio
 import threading
 
 _LOCK = threading.Lock()
@@ -41,6 +23,23 @@ _NOTES: dict[str, str] = {}
 _STOPS: set[str] = set()
 #: 要求“停在当前模型输出、下一轮读新消息”的会话（插话用）。
 _STEERS: set[str] = set()
+#: 跨线程实时唤醒列表：session_id -> {(loop, event, stop_only), ...}
+_WAITERS: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Event, bool]]] = {}
+
+
+def _notify_waiters(session_id: str, *, is_stop: bool) -> None:
+    """在锁外安全唤醒订阅该会话中断事件的协程（支持跨线程 `call_soon_threadsafe`）。"""
+    with _LOCK:
+        waiters = list(_WAITERS.get(session_id, ()))
+    for loop, ev, stop_only in waiters:
+        if stop_only and not is_stop:
+            continue
+        if loop.is_closed():
+            continue
+        try:
+            loop.call_soon_threadsafe(ev.set)
+        except RuntimeError:
+            pass
 
 
 def request_continue(session_id: str, note: str) -> None:
@@ -48,6 +47,7 @@ def request_continue(session_id: str, note: str) -> None:
     with _LOCK:
         _NOTES[session_id] = (note or "").strip()
         _STOPS.discard(session_id)
+    _notify_waiters(session_id, is_stop=False)
 
 
 def request_steer(session_id: str) -> None:
@@ -58,6 +58,7 @@ def request_steer(session_id: str) -> None:
     """
     with _LOCK:
         _STEERS.add(session_id)
+    _notify_waiters(session_id, is_stop=False)
 
 
 def take_steer(session_id: str) -> bool:
@@ -69,11 +70,12 @@ def take_steer(session_id: str) -> bool:
 
 
 def request_stop(session_id: str) -> None:
-    """请求「彻底停止」。同时清掉可能挂着的说明（停止优先）。"""
+    """请求「彻底停止」。同时清掉可能挂着的说明并立刻唤醒所有等待者（停止优先）。"""
     with _LOCK:
         _STOPS.add(session_id)
         _NOTES.pop(session_id, None)
         _STEERS.discard(session_id)
+    _notify_waiters(session_id, is_stop=True)
 
 
 def stop_requested(session_id: str) -> bool:
@@ -99,6 +101,36 @@ def should_break(session_id: str) -> bool:
     return has_pending(session_id)
 
 
+async def wait_for_interrupt(session_id: str, *, stop_only: bool = False) -> None:
+    """事件驱动等待中断信号；信号到达后 <1ms 返回（无轮询开销）。"""
+    loop = asyncio.get_running_loop()
+    ev = asyncio.Event()
+    entry = (loop, ev, stop_only)
+    with _LOCK:
+        already = (
+            session_id in _STOPS
+            if stop_only
+            else (session_id in _STOPS or session_id in _NOTES or session_id in _STEERS)
+        )
+        if already:
+            return
+        _WAITERS.setdefault(session_id, set()).add(entry)
+    try:
+        await ev.wait()
+    finally:
+        with _LOCK:
+            bucket = _WAITERS.get(session_id)
+            if bucket is not None:
+                bucket.discard(entry)
+                if not bucket:
+                    _WAITERS.pop(session_id, None)
+
+
+async def wait_for_stop(session_id: str) -> None:
+    """事件驱动等待「彻底停止」信号（忽略软插话/继续，专供运行中工具抢占取消用）。"""
+    await wait_for_interrupt(session_id, stop_only=True)
+
+
 def clear(session_id: str) -> None:
     """一轮结束时清干净 —— 否则残留的停止信号会把**下一轮**也打断。"""
     with _LOCK:
@@ -113,3 +145,4 @@ def reset_all() -> None:
         _STOPS.clear()
         _NOTES.clear()
         _STEERS.clear()
+        _WAITERS.clear()
