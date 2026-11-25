@@ -634,6 +634,8 @@ export function ChatPage() {
   const [settingsTarget, setSettingsTarget] = useState<ChatSessionOut | null>(null)
   const [archiveTarget, setArchiveTarget] = useState<ChatSessionOut | null>(null)
   const [purgeTarget, setPurgeTarget] = useState<ChatSessionOut | null>(null)
+  const [batchArchiveIds, setBatchArchiveIds] = useState<string[]>([])
+  const [batchPurgeIds, setBatchPurgeIds] = useState<string[]>([])
   const [purgeAllOpen, setPurgeAllOpen] = useState(false)
   const [confirmBusy, setConfirmBusy] = useState(false)
   const [contextInfo, setContextInfo] = useState<ChatContextOut | null>(null)
@@ -1049,6 +1051,73 @@ export function ChatPage() {
     }
   }
 
+  const handleBatchPin = async (ids: string[], pinned: boolean) => {
+    const results = await Promise.allSettled(ids.map((id) => api.pinChatSession(id, pinned)))
+    const ok = results.filter((r) => r.status === 'fulfilled').length
+    push(pinned ? `已批量置顶 ${ok} 条会话` : `已批量取消置顶 ${ok} 条会话`, 'success')
+    await loadSessions()
+  }
+
+  const handleBatchMoveProject = async (ids: string[], project: string | null) => {
+    const results = await Promise.allSettled(
+      ids.map((id) => api.updateChatSettings(id, { project })),
+    )
+    const ok = results.filter((r) => r.status === 'fulfilled').length
+    push(project ? `已将 ${ok} 条会话移入项目「${project}」` : `已将 ${ok} 条会话移出项目分组`, 'success')
+    await loadSessions()
+    if (activeId && ids.includes(activeId)) await loadDetail(activeId)
+  }
+
+  const handleConfirmBatchArchive = async () => {
+    if (batchArchiveIds.length === 0) return
+    setConfirmBusy(true)
+    try {
+      const results = await Promise.allSettled(
+        batchArchiveIds.map((id) => api.archiveChatSession(id)),
+      )
+      const ok = results.filter((r) => r.status === 'fulfilled').length
+      if (activeId && batchArchiveIds.includes(activeId)) {
+        const nextActive = sessions.find((x) => !x.archived && !batchArchiveIds.includes(x.id))
+        setActiveId(nextActive ? nextActive.id : null)
+        if (nextActive) setSearchParams({ session: nextActive.id }, { replace: true })
+        else setSearchParams({}, { replace: true })
+      }
+      setBatchArchiveIds([])
+      push(`已批量归档 ${ok} 条会话`, 'default')
+      await loadSessions()
+    } finally {
+      setConfirmBusy(false)
+    }
+  }
+
+  const handleBatchUnarchive = async (ids: string[]) => {
+    const results = await Promise.allSettled(ids.map((id) => api.unarchiveChatSession(id)))
+    const ok = results.filter((r) => r.status === 'fulfilled').length
+    push(`已批量恢复 ${ok} 条会话`, 'success')
+    await loadSessions()
+  }
+
+  const handleConfirmBatchPurge = async () => {
+    if (batchPurgeIds.length === 0) return
+    setConfirmBusy(true)
+    try {
+      const results = await Promise.allSettled(
+        batchPurgeIds.map((id) => api.purgeChatSession(id)),
+      )
+      const ok = results.filter((r) => r.status === 'fulfilled').length
+      if (activeId && batchPurgeIds.includes(activeId)) {
+        setActiveId(null)
+        setDetail(null)
+        setSearchParams({}, { replace: true })
+      }
+      setBatchPurgeIds([])
+      push(`已彻底删除 ${ok} 条归档会话`, 'default')
+      await loadSessions()
+    } finally {
+      setConfirmBusy(false)
+    }
+  }
+
   const handleUploadFile = async (files: FileList | null) => {
     if (!files || files.length === 0) return
     let targetSessionId = activeId
@@ -1242,6 +1311,11 @@ export function ChatPage() {
           onRequestPurgeAllArchived={() => setPurgeAllOpen(true)}
           onFork={handleForkSession}
           onOpenSettings={setSettingsTarget}
+          onBatchPin={handleBatchPin}
+          onBatchMoveProject={handleBatchMoveProject}
+          onRequestBatchArchive={setBatchArchiveIds}
+          onBatchUnarchive={handleBatchUnarchive}
+          onRequestBatchPurge={setBatchPurgeIds}
         />
       )}
 
@@ -1898,6 +1972,56 @@ export function ChatPage() {
             </Button>
             <Button variant="danger" loading={confirmBusy} onClick={() => void handleConfirmPurge()}>
               永久删除
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Batch Archive Confirm Modal */}
+      <Modal
+        open={batchArchiveIds.length > 0}
+        onClose={() => setBatchArchiveIds([])}
+        title={`批量归档 ${batchArchiveIds.length} 条会话`}
+      >
+        <div className="space-y-4 text-xs text-ink-secondary">
+          <p className="leading-relaxed">
+            确认将选中的 {batchArchiveIds.length} 条会话全部移入「已归档」？消息记录会保留且可随时批量恢复，关联沙箱与临时附件将立即释放。
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setBatchArchiveIds([])}>
+              取消
+            </Button>
+            <Button
+              variant="danger"
+              loading={confirmBusy}
+              onClick={() => void handleConfirmBatchArchive()}
+            >
+              确认批量归档
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Batch Purge Confirm Modal */}
+      <Modal
+        open={batchPurgeIds.length > 0}
+        onClose={() => setBatchPurgeIds([])}
+        title={`批量彻底删除 ${batchPurgeIds.length} 条归档会话`}
+      >
+        <div className="space-y-4 text-xs text-ink-secondary">
+          <p className="leading-relaxed text-red-600 dark:text-red-400">
+            此操作不可撤销：将从数据库永久物理删除选中的 {batchPurgeIds.length} 条归档会话及其全部消息记录。
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setBatchPurgeIds([])}>
+              取消
+            </Button>
+            <Button
+              variant="danger"
+              loading={confirmBusy}
+              onClick={() => void handleConfirmBatchPurge()}
+            >
+              永久删除 ({batchPurgeIds.length})
             </Button>
           </div>
         </div>

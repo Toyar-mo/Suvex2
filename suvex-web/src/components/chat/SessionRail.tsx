@@ -4,6 +4,7 @@ import {
   Archive,
   ArchiveRestore,
   Check,
+  CheckSquare,
   ChevronDown,
   ChevronRight,
   Download,
@@ -17,6 +18,7 @@ import {
   Search,
   ShieldCheck,
   SlidersHorizontal,
+  Square,
   Trash2,
   X,
 } from 'lucide-react'
@@ -39,6 +41,11 @@ export interface SessionRailProps {
   onRequestPurgeAllArchived: () => void
   onFork: (session: ChatSessionOut) => Promise<void>
   onOpenSettings: (session: ChatSessionOut) => void
+  onBatchPin: (ids: string[], pinned: boolean) => Promise<void>
+  onBatchMoveProject: (ids: string[], project: string | null) => Promise<void>
+  onRequestBatchArchive: (ids: string[]) => void
+  onBatchUnarchive: (ids: string[]) => Promise<void>
+  onRequestBatchPurge: (ids: string[]) => void
 }
 
 function SessionActionMenu({
@@ -231,11 +238,23 @@ export function SessionRail({
   onRequestPurgeAllArchived,
   onFork,
   onOpenSettings,
+  onBatchPin,
+  onBatchMoveProject,
+  onRequestBatchArchive,
+  onBatchUnarchive,
+  onRequestBatchPurge,
 }: SessionRailProps) {
   const [tab, setTab] = useState<'active' | 'archived'>('active')
   const [searchQuery, setSearchQuery] = useState('')
   const [projectFilter, setProjectFilter] = useState<string>('__all__')
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({})
+
+  // Multi-select batch mode
+  const [selectMode, setSelectMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [batchProjectOpen, setBatchProjectOpen] = useState(false)
+  const [batchProjectDraft, setBatchProjectDraft] = useState('')
+  const [batchBusy, setBatchBusy] = useState(false)
 
   // Inline rename state
   const [renamingId, setRenamingId] = useState<string | null>(null)
@@ -247,6 +266,26 @@ export function SessionRail({
       window.setTimeout(() => renameInputRef.current?.select(), 10)
     }
   }, [renamingId])
+
+  useEffect(() => {
+    const validIds = new Set(
+      sessions.filter((s) => (tab === 'archived' ? s.archived : !s.archived)).map((s) => s.id),
+    )
+    setSelectedIds((prev) => prev.filter((id) => validIds.has(id)))
+  }, [sessions, tab])
+
+  const exitSelectMode = () => {
+    setSelectMode(false)
+    setSelectedIds([])
+    setBatchProjectOpen(false)
+    setBatchProjectDraft('')
+  }
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    )
+  }
 
   const activeSessions = useMemo(() => sessions.filter((s) => !s.archived), [sessions])
   const archivedSessions = useMemo(() => sessions.filter((s) => s.archived), [sessions])
@@ -278,7 +317,6 @@ export function SessionRail({
     })
   }, [tab, activeSessions, archivedSessions, searchQuery, projectFilter])
 
-  // Group active sessions: Pinned -> By Project -> Recent ungrouped
   const groupedActive = useMemo(() => {
     const pinned: ChatSessionOut[] = []
     const byProject = new Map<string, ChatSessionOut[]>()
@@ -303,6 +341,29 @@ export function SessionRail({
     }
   }, [filtered, projectFilter])
 
+  const allFilteredSelected =
+    filtered.length > 0 && filtered.every((s) => selectedIds.includes(s.id))
+
+  const toggleSelectAll = () => {
+    if (allFilteredSelected) {
+      setSelectedIds([])
+    } else {
+      setSelectedIds(filtered.map((s) => s.id))
+    }
+  }
+
+  const runBatch = async (fn: () => Promise<void>) => {
+    setBatchBusy(true)
+    try {
+      await fn()
+      setSelectedIds([])
+      setBatchProjectOpen(false)
+      setBatchProjectDraft('')
+    } finally {
+      setBatchBusy(false)
+    }
+  }
+
   const startRename = (s: ChatSessionOut) => {
     setRenamingId(s.id)
     setRenameDraft(s.title || '')
@@ -318,32 +379,57 @@ export function SessionRail({
   const renderSessionRow = (s: ChatSessionOut) => {
     const isActive = s.id === activeId
     const isRenaming = renamingId === s.id
+    const isChecked = selectedIds.includes(s.id)
     return (
       <div
         key={s.id}
         onClick={() => {
-          if (!isRenaming) onSelect(s.id)
+          if (selectMode) {
+            toggleSelected(s.id)
+          } else if (!isRenaming) {
+            onSelect(s.id)
+          }
         }}
         onDoubleClick={() => {
-          if (!s.archived) startRename(s)
+          if (!selectMode && !s.archived) startRename(s)
         }}
         className={cn(
           'group relative flex cursor-pointer items-start justify-between gap-1.5 rounded-lg px-2.5 py-2 transition-colors',
-          isActive
-            ? 'bg-accent-soft/75 text-ink ring-1 ring-accent/25'
-            : 'text-ink-secondary hover:bg-subtle hover:text-ink',
+          selectMode && isChecked
+            ? 'bg-accent-soft text-ink ring-1 ring-accent/40'
+            : isActive
+              ? 'bg-accent-soft/75 text-ink ring-1 ring-accent/25'
+              : 'text-ink-secondary hover:bg-subtle hover:text-ink',
         )}
       >
-        {isActive && (
+        {!selectMode && isActive && (
           <span className="absolute bottom-2 left-0 top-2 w-0.5 rounded-r bg-accent" />
+        )}
+
+        {selectMode && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              toggleSelected(s.id)
+            }}
+            className={cn(
+              'mt-0.5 shrink-0 transition-colors',
+              isChecked ? 'text-accent' : 'text-ink-muted hover:text-ink',
+            )}
+            aria-label={isChecked ? '取消选择' : '选择会话'}
+          >
+            {isChecked ? (
+              <CheckSquare className="h-3.5 w-3.5" />
+            ) : (
+              <Square className="h-3.5 w-3.5" />
+            )}
+          </button>
         )}
 
         <div className="min-w-0 flex-1">
           {isRenaming ? (
-            <div
-              className="flex items-center gap-1"
-              onClick={(e) => e.stopPropagation()}
-            >
+            <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
               <input
                 ref={renameInputRef}
                 value={renameDraft}
@@ -411,7 +497,7 @@ export function SessionRail({
           </div>
         </div>
 
-        {!isRenaming && (
+        {!isRenaming && !selectMode && (
           <div className="flex shrink-0 items-center">
             <SessionActionMenu
               session={s}
@@ -432,20 +518,36 @@ export function SessionRail({
   return (
     <aside className="hidden h-full w-64 shrink-0 flex-col overflow-hidden border-r border-line bg-surface lg:flex">
       {/* Header */}
-      <div className="flex h-14 shrink-0 items-center justify-between border-b border-line px-3.5">
-        <div className="flex items-center gap-2">
-          <h2 className="text-xs font-semibold tracking-wide text-ink">会话管理</h2>
+      <div className="flex h-14 shrink-0 items-center justify-between gap-1.5 border-b border-line px-3">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <h2 className="truncate text-xs font-semibold tracking-wide text-ink">会话管理</h2>
           <span className="rounded-full bg-subtle px-1.5 py-0.5 font-mono text-[10px] text-ink-muted">
             {activeSessions.length}
           </span>
         </div>
-        <Button size="sm" variant="primary" onClick={onNew}>
-          <Plus className="h-3.5 w-3.5" />
-          新建
-        </Button>
+        <div className="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            onClick={() => (selectMode ? exitSelectMode() : setSelectMode(true))}
+            className={cn(
+              'inline-flex h-7 items-center gap-1 rounded-lg border px-2 text-[11px] font-medium transition-colors',
+              selectMode
+                ? 'border-accent bg-accent-soft text-accent-ink'
+                : 'border-line bg-subtle text-ink-secondary hover:border-line-strong hover:text-ink',
+            )}
+            title={selectMode ? '退出多选模式' : '开启多选批量管理'}
+          >
+            <CheckSquare className="h-3 w-3" />
+            <span>{selectMode ? '完成' : '多选'}</span>
+          </button>
+          <Button size="sm" variant="primary" onClick={onNew} className="h-7 px-2 text-[11px]">
+            <Plus className="h-3.5 w-3.5" />
+            新建
+          </Button>
+        </div>
       </div>
 
-      {/* Search + Active / Archived Segmented Tabs */}
+      {/* Search + Active / Archived Segmented Tabs + Select All Bar */}
       <div className="shrink-0 space-y-2 border-b border-line px-3 py-2.5">
         <div className="relative">
           <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-ink-muted" />
@@ -494,7 +596,6 @@ export function SessionRail({
           </button>
         </div>
 
-        {/* Project quick filter chips */}
         {tab === 'active' && projectNames.length > 0 && (
           <div className="flex flex-wrap gap-1 pt-0.5">
             <button
@@ -526,6 +627,26 @@ export function SessionRail({
             ))}
           </div>
         )}
+
+        {selectMode && (
+          <div className="flex items-center justify-between rounded-lg border border-accent/30 bg-accent-soft/50 px-2.5 py-1.5 text-[11px]">
+            <button
+              type="button"
+              onClick={toggleSelectAll}
+              className="inline-flex items-center gap-1.5 font-medium text-ink hover:text-accent"
+            >
+              {allFilteredSelected ? (
+                <CheckSquare className="h-3.5 w-3.5 text-accent" />
+              ) : (
+                <Square className="h-3.5 w-3.5 text-ink-muted" />
+              )}
+              <span>{allFilteredSelected ? '取消全选' : `全选 (${filtered.length})`}</span>
+            </button>
+            <span className="font-mono text-[10px] text-accent-ink">
+              已选 {selectedIds.length} 条
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Scrollable Session List */}
@@ -538,7 +659,6 @@ export function SessionRail({
           <div className="space-y-1">{filtered.map(renderSessionRow)}</div>
         ) : (
           <>
-            {/* Pinned Section */}
             {groupedActive.pinned.length > 0 && (
               <div>
                 <p className="mb-1 px-2 text-[10px] font-medium uppercase tracking-wider text-ink-muted">
@@ -548,7 +668,6 @@ export function SessionRail({
               </div>
             )}
 
-            {/* Project Folders */}
             {groupedActive.projects.map(([proj, items]) => {
               const isCollapsed = Boolean(collapsedProjects[proj])
               return (
@@ -578,7 +697,6 @@ export function SessionRail({
               )
             })}
 
-            {/* Recent Ungrouped */}
             {groupedActive.ungrouped.length > 0 && (
               <div>
                 {(groupedActive.pinned.length > 0 || groupedActive.projects.length > 0) && (
@@ -593,19 +711,127 @@ export function SessionRail({
         )}
       </div>
 
-      {/* Archived Footer Bar */}
-      {tab === 'archived' && archivedSessions.length > 0 && (
-        <div className="flex shrink-0 items-center justify-between border-t border-line bg-subtle/60 px-3 py-2 text-[11px]">
-          <span className="text-ink-muted">共 {archivedSessions.length} 条归档</span>
-          <button
-            type="button"
-            onClick={onRequestPurgeAllArchived}
-            className="inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium text-red-600 transition-colors hover:bg-red-500/10 dark:text-red-400"
-          >
-            <Trash2 className="h-3 w-3" />
-            清空归档
-          </button>
+      {/* Multi-Select Batch Action Dock or Archived Footer */}
+      {selectMode && selectedIds.length > 0 ? (
+        <div className="shrink-0 space-y-2 border-t border-line bg-subtle/90 p-2.5 text-[11px]">
+          {batchProjectOpen && tab === 'active' && (
+            <div className="space-y-1.5 rounded-lg border border-line bg-surface p-2">
+              <div className="flex items-center gap-1">
+                <input
+                  value={batchProjectDraft}
+                  onChange={(e) => setBatchProjectDraft(e.target.value)}
+                  placeholder="输入项目名（留空移出）"
+                  className="h-7 flex-1 rounded border border-line bg-canvas px-2 text-[11px] text-ink focus:border-accent focus:outline-none"
+                />
+                <Button
+                  size="sm"
+                  variant="primary"
+                  loading={batchBusy}
+                  onClick={() =>
+                    void runBatch(() =>
+                      onBatchMoveProject(selectedIds, batchProjectDraft.trim() || null),
+                    )
+                  }
+                  className="h-7 px-2 text-[11px]"
+                >
+                  确定
+                </Button>
+              </div>
+              {projectNames.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {projectNames.map((p) => (
+                    <button
+                      key={p}
+                      type="button"
+                      onClick={() => setBatchProjectDraft(p)}
+                      className="rounded bg-subtle px-1.5 py-0.5 text-[10px] text-ink-secondary hover:bg-wash hover:text-ink"
+                    >
+                      {p}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {tab === 'active' ? (
+            <div className="grid grid-cols-3 gap-1">
+              <button
+                type="button"
+                disabled={batchBusy}
+                onClick={() => {
+                  const allPinned = selectedIds.every(
+                    (id) => sessions.find((s) => s.id === id)?.pinned,
+                  )
+                  void runBatch(() => onBatchPin(selectedIds, !allPinned))
+                }}
+                className="inline-flex items-center justify-center gap-1 rounded-lg border border-line bg-surface py-1.5 font-medium text-ink-secondary transition-colors hover:border-line-strong hover:text-ink disabled:opacity-50"
+              >
+                <Pin className="h-3 w-3" />
+                <span>置顶</span>
+              </button>
+              <button
+                type="button"
+                disabled={batchBusy}
+                onClick={() => setBatchProjectOpen((v) => !v)}
+                className={cn(
+                  'inline-flex items-center justify-center gap-1 rounded-lg border py-1.5 font-medium transition-colors disabled:opacity-50',
+                  batchProjectOpen
+                    ? 'border-accent bg-accent-soft text-accent-ink'
+                    : 'border-line bg-surface text-ink-secondary hover:border-line-strong hover:text-ink',
+                )}
+              >
+                <Folder className="h-3 w-3" />
+                <span>分组</span>
+              </button>
+              <button
+                type="button"
+                disabled={batchBusy}
+                onClick={() => onRequestBatchArchive(selectedIds)}
+                className="inline-flex items-center justify-center gap-1 rounded-lg border border-amber-300/60 bg-amber-50/70 py-1.5 font-medium text-amber-800 transition-colors hover:bg-amber-100/70 disabled:opacity-50 dark:border-amber-800/70 dark:bg-amber-950/50 dark:text-amber-300"
+              >
+                <Archive className="h-3 w-3" />
+                <span>归档</span>
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                disabled={batchBusy}
+                onClick={() => void runBatch(() => onBatchUnarchive(selectedIds))}
+                className="inline-flex items-center justify-center gap-1 rounded-lg border border-emerald-300/60 bg-emerald-50/70 py-1.5 font-medium text-emerald-800 transition-colors hover:bg-emerald-100/70 disabled:opacity-50 dark:border-emerald-800/70 dark:bg-emerald-950/50 dark:text-emerald-300"
+              >
+                <ArchiveRestore className="h-3 w-3" />
+                <span>批量恢复</span>
+              </button>
+              <button
+                type="button"
+                disabled={batchBusy}
+                onClick={() => onRequestBatchPurge(selectedIds)}
+                className="inline-flex items-center justify-center gap-1 rounded-lg border border-red-300/60 bg-red-50/70 py-1.5 font-medium text-red-700 transition-colors hover:bg-red-100/70 disabled:opacity-50 dark:border-red-800/70 dark:bg-red-950/50 dark:text-red-300"
+              >
+                <Trash2 className="h-3 w-3" />
+                <span>彻底删除</span>
+              </button>
+            </div>
+          )}
         </div>
+      ) : (
+        tab === 'archived' &&
+        archivedSessions.length > 0 && (
+          <div className="flex shrink-0 items-center justify-between border-t border-line bg-subtle/60 px-3 py-2 text-[11px]">
+            <span className="text-ink-muted">共 {archivedSessions.length} 条归档</span>
+            <button
+              type="button"
+              onClick={onRequestPurgeAllArchived}
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium text-red-600 transition-colors hover:bg-red-500/10 dark:text-red-400"
+            >
+              <Trash2 className="h-3 w-3" />
+              清空归档
+            </button>
+          </div>
+        )
       )}
     </aside>
   )
