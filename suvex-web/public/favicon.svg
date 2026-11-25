@@ -1,5 +1,25 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
-  <rect width="32" height="32" rx="8" fill="#141413"/>
-  <path d="M9.5 11.5C9.5 9.84315 10.8431 8.5 12.5 8.5H20.5C21.6046 8.5 22.5 9.39543 22.5 10.5C22.5 11.6046 21.6046 12.5 20.5 12.5H13.5V14.5H19.5C21.1569 14.5 22.5 15.8431 22.5 17.5V20.5C22.5 22.1569 21.1569 23.5 19.5 23.5H11.5C10.3954 23.5 9.5 22.6046 9.5 21.5C9.5 20.3954 10.3954 19.5 11.5 19.5H18.5V17.5H12.5C10.8431 17.5 9.5 16.1569 9.5 14.5V11.5Z" fill="#FAF9F7"/>
-  <circle cx="23.5" cy="9.5" r="2" fill="#6366F1"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="8" y1="4" x2="56" y2="62" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#312E81"/>
+      <stop offset="48%" stop-color="#1E1B4B"/>
+      <stop offset="100%" stop-color="#0F101A"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="12" y1="2" x2="52" y2="62" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#C7D2FE" stop-opacity="0.72"/>
+      <stop offset="100%" stop-color="#38BDF8" stop-opacity="0.48"/>
+    </linearGradient>
+    <linearGradient id="prism" x1="18" y1="14" x2="46" y2="52" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#EEF2FF"/>
+      <stop offset="52%" stop-color="#A5B4FC"/>
+      <stop offset="100%" stop-color="#6366F1"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#bg)"/>
+  <path d="M18 3.5H46C53.5 3.5 59.5 9.2 60.4 16.5C57.5 11.2 51.8 7.5 45.2 7.5H18.8C12.2 7.5 6.5 11.2 3.6 16.5C4.5 9.2 10.5 3.5 18 3.5Z" fill="#FFFFFF" fill-opacity="0.16"/>
+  <rect x="2.75" y="2.75" width="58.5" height="58.5" rx="15.25" stroke="url(#rim)" stroke-width="1.5"/>
+  <path d="M23.5 22.5C23.5 19.4624 25.9624 17 29 17H39.5C41.7091 17 43.5 18.7909 43.5 21C43.5 23.2091 41.7091 25 39.5 25H30.5V29.5H36.5C40.9183 29.5 44.5 33.0817 44.5 37.5V40C44.5 44.4183 40.9183 48 36.5 48H24.5C22.2909 48 20.5 46.2091 20.5 44C20.5 41.7909 22.2909 40 24.5 40H35.5V36H29C25.9624 36 23.5 33.5376 23.5 30.5V22.5Z" fill="url(#prism)"/>
+  <circle cx="47.5" cy="17" r="5.5" fill="#38BDF8" fill-opacity="0.28"/>
+  <circle cx="47.5" cy="17" r="3.4" fill="#38BDF8"/>
+  <circle cx="46.6" cy="16.1" r="1.05" fill="#FFFFFF"/>
 </svg>

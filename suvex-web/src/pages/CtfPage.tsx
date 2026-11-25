@@ -36,14 +36,15 @@ import type {
 import {
   Badge,
   Button,
-  Card,
   EmptyState,
   Input,
   Modal,
-  PageHeader,
   Select,
   Skeleton,
 } from '@/components/ui/primitives'
+import { MeshAuroraShader, SpotlightCard } from '@/components/ui/ShaderCanvas'
+import { TactileAppIcon } from '@/components/ui/AppIcons'
+import { KineticNumber, ScrollReveal } from '@/components/ui/MotionPrimitives'
 import { MarkdownView } from '@/components/ui/MarkdownView'
 import { cn } from '@/lib/cn'
 
@@ -435,44 +436,62 @@ export function CtfPage() {
 
   return (
     <div>
-      <PageHeader
-        eyebrow="Autonomous CTF Kernel & Model Race"
-        title="CTF 夺旗工作台"
-        description="原生支持 CTF2 远程 HTTP MCP 拉题与靶机调度、多模型赛跑自动托管、按分值排队与 Writeup 交付。"
-        actions={
-          <>
-            <Button variant="secondary" size="sm" onClick={() => void handlePrioritizeByScore()}>
-              <ArrowDownWideNarrow className="h-3.5 w-3.5" />
-              按高分排优
-            </Button>
-            {raceStatus?.running ? (
-              <Button variant="danger" size="sm" onClick={() => void handleStopRace()}>
-                <Square className="h-3 w-3" />
-                停止赛跑
+      {/* CTF Shader Hero Banner */}
+      <ScrollReveal>
+        <div className="relative mb-6 overflow-hidden rounded-2xl border border-line bg-surface px-6 py-5 shadow-elevated">
+          <div className="pointer-events-none absolute inset-0 z-0 opacity-75">
+            <MeshAuroraShader palette="ctf" speed={0.75} />
+            <div className="absolute inset-0 bg-gradient-to-r from-surface/92 via-surface/75 to-surface/55" />
+          </div>
+          <div className="relative z-10 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex items-start gap-4">
+              <TactileAppIcon variant="ctf" size={46} />
+              <div className="min-w-0">
+                <p className="font-mono text-[11px] font-medium uppercase tracking-[0.14em] text-accent">
+                  Autonomous CTF Kernel & Model Race
+                </p>
+                <h1 className="mt-1 text-2xl font-semibold tracking-[-0.025em] text-ink">
+                  <span className="kinetic-gradient-text">CTF 夺旗工作台</span>
+                </h1>
+                <p className="mt-1 text-xs leading-relaxed text-ink-secondary">
+                  原生支持 CTF2 远程 HTTP MCP 拉题与靶机调度、多模型赛跑自动托管、按分值排队与 Writeup 交付。
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="secondary" size="sm" onClick={() => void handlePrioritizeByScore()} className="bg-surface/80 backdrop-blur">
+                <ArrowDownWideNarrow className="h-3.5 w-3.5" />
+                按高分排优
               </Button>
-            ) : (
-              <Button variant="accent" size="sm" onClick={() => setRaceOpen(true)}>
-                <Flame className="h-3.5 w-3.5" />
-                多模型赛跑
+              {raceStatus?.running ? (
+                <Button variant="danger" size="sm" onClick={() => void handleStopRace()}>
+                  <Square className="h-3 w-3" />
+                  停止赛跑
+                </Button>
+              ) : (
+                <Button variant="accent" size="sm" onClick={() => setRaceOpen(true)}>
+                  <Flame className="h-3.5 w-3.5" />
+                  多模型赛跑
+                </Button>
+              )}
+              <Button variant="secondary" size="sm" onClick={() => setBindOpen(true)} className="bg-surface/80 backdrop-blur">
+                <KeyRound className="h-3.5 w-3.5" />
+                绑定账号
               </Button>
-            )}
-            <Button variant="secondary" size="sm" onClick={() => setBindOpen(true)}>
-              <KeyRound className="h-3.5 w-3.5" />
-              绑定账号
-            </Button>
-            {hasBoundAccount && (
-              <Button variant="secondary" size="sm" onClick={() => void handleOpenSourcePicker()}>
-                <ListFilter className="h-3.5 w-3.5" />
-                选择题库
+              {hasBoundAccount && (
+                <Button variant="secondary" size="sm" onClick={() => void handleOpenSourcePicker()} className="bg-surface/80 backdrop-blur">
+                  <ListFilter className="h-3.5 w-3.5" />
+                  选择题库
+                </Button>
+              )}
+              <Button variant="primary" size="sm" loading={syncing} onClick={() => void handleSync()}>
+                <RefreshCw className="h-3.5 w-3.5" />
+                同步题板
               </Button>
-            )}
-            <Button variant="primary" size="sm" loading={syncing} onClick={() => void handleSync()}>
-              <RefreshCw className="h-3.5 w-3.5" />
-              同步题板
-            </Button>
-          </>
-        }
-      />
+            </div>
+          </div>
+        </div>
+      </ScrollReveal>
 
       {/* Sync Warnings */}
       {syncWarnings.length > 0 && (
@@ -534,7 +553,7 @@ export function CtfPage() {
 
       {/* Top Status Strip */}
       <div className="mb-6 grid gap-4 md:grid-cols-3">
-        <Card className="p-4">
+        <SpotlightCard className="p-4">
           <div className="flex items-center justify-between text-xs text-ink-secondary">
             <span>已绑定赛题平台 & MCP</span>
             <KeyRound className="h-3.5 w-3.5 text-ink-muted" />
@@ -584,7 +603,7 @@ export function CtfPage() {
               )}
             </div>
           )}
-        </Card>
+        </SpotlightCard>
 
         <button
           type="button"
@@ -592,7 +611,7 @@ export function CtfPage() {
           className="text-left"
           title="点击快速筛选「解题中」的题目"
         >
-          <Card
+          <SpotlightCard
             className={cn(
               'h-full p-4 transition-colors hover:border-accent/60',
               statusFilter === 'solving' && 'border-accent ring-1 ring-accent/40',
@@ -603,27 +622,37 @@ export function CtfPage() {
               <Trophy className="h-3.5 w-3.5 text-ink-muted" />
             </div>
             <div className="mt-2 font-mono text-2xl font-semibold tabular-nums text-ink">
-              {queue ? `${queue.running} / ${queue.limit}` : '0 / 0'}
+              {queue ? (
+                <>
+                  <KineticNumber value={queue.running} /> / {queue.limit}
+                </>
+              ) : (
+                '0 / 0'
+              )}
             </div>
             <p className="mt-0.5 text-[11px] text-ink-muted">
               排队等待 {queue?.queued ?? 0} 题 · 已解出{' '}
               {challenges.filter((c) => c.status === 'solved').length} / {challenges.length}
             </p>
-          </Card>
+          </SpotlightCard>
         </button>
 
-        <Card className="p-4">
+        <SpotlightCard className="p-4">
           <div className="flex items-center justify-between text-xs text-ink-secondary">
             <span>模型推理用量</span>
             <Flag className="h-3.5 w-3.5 text-ink-muted" />
           </div>
           <div className="mt-2 font-mono text-2xl font-semibold tabular-nums text-ink">
-            {usage ? formatCompactNumber(usage.totalTokens) : '0'}
+            {usage ? (
+              <KineticNumber value={usage.totalTokens} format={(n) => formatCompactNumber(Math.round(n))} />
+            ) : (
+              '0'
+            )}
           </div>
           <p className="mt-0.5 text-[11px] text-ink-muted">
             累计 {usage?.calls ?? 0} 次调用 · 含推理与工具回合
           </p>
-        </Card>
+        </SpotlightCard>
       </div>
 
       {/* Competition Switcher + Single Pull */}
@@ -772,10 +801,11 @@ export function CtfPage() {
             const isSolving = isActiveSolving(chal)
             const checked = selectedIds.includes(chal.id)
             return (
-              <Card
+              <SpotlightCard
                 key={chal.id}
+                intensity="subtle"
                 className={cn(
-                  'flex flex-col justify-between p-5 transition-colors',
+                  'flex flex-col justify-between p-5 transition-all duration-200 hover:-translate-y-0.5',
                   checked && 'border-accent ring-1 ring-accent',
                 )}
               >
@@ -852,7 +882,7 @@ export function CtfPage() {
                     题解
                   </Button>
                 </div>
-              </Card>
+              </SpotlightCard>
             )
           })}
         </div>

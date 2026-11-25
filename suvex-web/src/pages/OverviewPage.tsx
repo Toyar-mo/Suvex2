@@ -42,7 +42,10 @@ import type {
   SystemTelemetryOut,
   TokenUsageTrendOut,
 } from '@/types/api'
-import { Badge, Button, Card, EmptyState, PageHeader, Skeleton } from '@/components/ui/primitives'
+import { Badge, Button, Card, EmptyState, Skeleton } from '@/components/ui/primitives'
+import { MeshAuroraShader, SpotlightCard } from '@/components/ui/ShaderCanvas'
+import { TactileAppIcon } from '@/components/ui/AppIcons'
+import { KineticNumber, ScrollReveal } from '@/components/ui/MotionPrimitives'
 import { cn } from '@/lib/cn'
 
 const SEVERITIES: Severity[] = ['critical', 'high', 'medium', 'low', 'info']
@@ -385,94 +388,121 @@ export function OverviewPage() {
 
   return (
     <div>
-      <PageHeader
-        eyebrow="Operations Briefing · Suvex 2.1"
-        title="全局态势总览"
-        description="基于异步事件总线（EventBus）实时推送智能体行为流，汇聚风险态势、质量评分卡与系统遥测。"
-        actions={
-          <>
-            <Button
-              variant="secondary"
-              size="sm"
-              loading={refreshing}
-              onClick={() => void load(true)}
-            >
-              <RefreshCw className="h-3.5 w-3.5" />
-              刷新
-            </Button>
-            <Link to="/missions">
-              <Button variant="secondary" size="sm">
-                <GitBranch className="h-3.5 w-3.5" />
-                作战图
-              </Button>
-            </Link>
-            <Link to="/chat?new=1">
-              <Button variant="secondary" size="sm">
-                <MessagesSquare className="h-3.5 w-3.5" />
-                新建对话
-              </Button>
-            </Link>
-            <Link to="/scans?new=1">
-              <Button variant="primary" size="sm">
-                <Plus className="h-3.5 w-3.5" />
-                发起扫描
-              </Button>
-            </Link>
-          </>
-        }
-      />
+      {/* Cinematic Shader Telemetry Hero */}
+      <ScrollReveal>
+        <div className="relative mb-6 overflow-hidden rounded-2xl border border-line bg-surface shadow-elevated">
+          <div className="pointer-events-none absolute inset-0 z-0 opacity-75">
+            <MeshAuroraShader palette="indigo" speed={0.75} />
+            <div className="absolute inset-0 bg-gradient-to-r from-surface/92 via-surface/72 to-surface/55" />
+          </div>
 
-      {/* Live System Telemetry Strip */}
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-editorial border border-line bg-surface px-4 py-3 shadow-editorial">
-        <div className="flex flex-wrap items-center gap-3 text-xs">
-          <Badge
-            pulse={sseLive}
-            className={
-              sseLive
-                ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300'
-                : 'border-line bg-subtle text-ink-secondary'
-            }
-          >
-            <Radio className="h-3 w-3" />
-            {sseLive ? 'EventBus 实时推送' : '连接事件总线…'}
-          </Badge>
+          <div className="relative z-10 flex flex-col gap-5 px-6 py-6 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-4">
+              <TactileAppIcon variant="overview" size={48} />
+              <div className="min-w-0">
+                <p className="font-mono text-[11px] font-medium uppercase tracking-[0.14em] text-accent">
+                  Operations Briefing · Suvex 2.1
+                </p>
+                <h1 className="mt-1 text-2xl font-semibold tracking-[-0.025em] text-ink">
+                  <span className="kinetic-gradient-text">全局态势总览</span>
+                </h1>
+                <p className="mt-1 max-w-xl text-xs leading-relaxed text-ink-secondary">
+                  基于异步事件总线（EventBus）实时推送智能体行为流，汇聚风险态势、质量评分卡与系统遥测。
+                </p>
+              </div>
+            </div>
 
-          <span className="tabular-nums text-ink-secondary">
-            运行中扫描 <strong className="text-ink">{metrics?.activeScans || 0}</strong>
-            {queue ? ` / 并发 ${queue.limit}（排队 ${queue.queued}）` : ''}
-          </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                loading={refreshing}
+                onClick={() => void load(true)}
+                className="bg-surface/80 backdrop-blur"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                刷新
+              </Button>
+              <Link to="/missions">
+                <Button variant="secondary" size="sm" className="bg-surface/80 backdrop-blur">
+                  <GitBranch className="h-3.5 w-3.5" />
+                  作战图
+                </Button>
+              </Link>
+              <Link to="/chat?new=1">
+                <Button variant="secondary" size="sm" className="bg-surface/80 backdrop-blur">
+                  <MessagesSquare className="h-3.5 w-3.5" />
+                  新建对话
+                </Button>
+              </Link>
+              <Link to="/scans?new=1">
+                <Button variant="primary" size="sm">
+                  <Plus className="h-3.5 w-3.5" />
+                  发起扫描
+                </Button>
+              </Link>
+            </div>
+          </div>
 
-          {telemetry && (
-            <>
-              <span className="text-ink-muted">·</span>
-              <span className="inline-flex items-center gap-1 tabular-nums text-ink-secondary">
-                <Box className="h-3.5 w-3.5 text-ink-muted" />
-                沙箱容器 <strong className="text-ink">{telemetry.sandboxes.sandboxCount}</strong>
-              </span>
-              <span className="text-ink-muted">·</span>
+          {/* Live System Telemetry Strip integrated into Hero Footer */}
+          <div className="relative z-10 flex flex-wrap items-center justify-between gap-3 border-t border-line/80 bg-surface/75 px-6 py-3 backdrop-blur">
+            <div className="flex flex-wrap items-center gap-3 text-xs">
+              <Badge
+                pulse={sseLive}
+                className={
+                  sseLive
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300'
+                    : 'border-line bg-subtle text-ink-secondary'
+                }
+              >
+                <Radio className="h-3 w-3" />
+                {sseLive ? 'EventBus 实时推送' : '连接事件总线…'}
+              </Badge>
+
               <span className="tabular-nums text-ink-secondary">
-                模型就绪{' '}
+                运行中扫描{' '}
                 <strong className="text-ink">
-                  {telemetry.providers.verified}/{telemetry.providers.total}
+                  <KineticNumber value={metrics?.activeScans || 0} />
                 </strong>
+                {queue ? ` / 并发 ${queue.limit}（排队 ${queue.queued}）` : ''}
               </span>
-              <span className="text-ink-muted">·</span>
-              <span className="font-mono text-[11px] text-ink-muted">
-                订阅者 {telemetry.eventBus.activeSubscribers} · 运行{' '}
-                {formatDuration(telemetry.uptimeSeconds)}
-              </span>
-            </>
-          )}
-        </div>
 
-        <Link
-          to="/activity"
-          className="inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline"
-        >
-          进入全屏活动流
-          <ArrowUpRight className="h-3.5 w-3.5" />
-        </Link>
-      </div>
+              {telemetry && (
+                <>
+                  <span className="text-ink-muted">·</span>
+                  <span className="inline-flex items-center gap-1 tabular-nums text-ink-secondary">
+                    <Box className="h-3.5 w-3.5 text-ink-muted" />
+                    沙箱容器{' '}
+                    <strong className="text-ink">
+                      <KineticNumber value={telemetry.sandboxes.sandboxCount} />
+                    </strong>
+                  </span>
+                  <span className="text-ink-muted">·</span>
+                  <span className="tabular-nums text-ink-secondary">
+                    模型就绪{' '}
+                    <strong className="text-ink">
+                      {telemetry.providers.verified}/{telemetry.providers.total}
+                    </strong>
+                  </span>
+                  <span className="text-ink-muted">·</span>
+                  <span className="font-mono text-[11px] text-ink-muted">
+                    订阅者 {telemetry.eventBus.activeSubscribers} · 运行{' '}
+                    {formatDuration(telemetry.uptimeSeconds)}
+                  </span>
+                </>
+              )}
+            </div>
+
+            <Link
+              to="/activity"
+              className="inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline"
+            >
+              进入全屏活动流
+              <ArrowUpRight className="h-3.5 w-3.5" />
+            </Link>
+          </div>
+        </div>
+      </ScrollReveal>
 
       {/* Section 1: Process First — Live Activity + Risk & Attention */}
       <div className="grid gap-6 lg:grid-cols-12">
@@ -653,80 +683,84 @@ export function OverviewPage() {
 
         {/* Risk & Attention Side Column */}
         <div className="space-y-6 lg:col-span-5">
-          <Card className="p-5">
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-[11px] font-medium uppercase tracking-[0.1em] text-ink-muted">
-                  Risk Posture
-                </p>
-                <div className="mt-1 flex items-baseline gap-2.5">
-                  <span className="font-mono text-3xl font-semibold tabular-nums tracking-tight text-ink">
-                    {metrics ? metrics.riskScore.toFixed(1) : '0.0'}
-                  </span>
-                  <span className="text-xs text-ink-secondary">
-                    综合风险指数 · {metrics?.riskLevel || 'low'}
-                  </span>
-                </div>
-              </div>
-              <Link to="/findings" className="text-xs font-medium text-accent hover:underline">
-                处置漏洞 →
-              </Link>
-            </div>
-
-            <div className="mt-5 space-y-2.5">
-              {SEVERITIES.map((sev) => {
-                const count = breakdownMap.get(sev) || 0
-                const pct = totalSeverity > 0 ? Math.round((count / totalSeverity) * 100) : 0
-                const meta = SEVERITY_META[sev]
-                return (
-                  <div key={sev} className="flex items-center gap-3 text-xs">
-                    <span className="flex w-12 items-center gap-1.5 text-ink-secondary">
-                      <span className={cn('h-2 w-2 rounded-full', meta.dot)} />
-                      {meta.label}
+          <ScrollReveal delayMs={70}>
+            <SpotlightCard className="p-5">
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.1em] text-ink-muted">
+                    Risk Posture
+                  </p>
+                  <div className="mt-1 flex items-baseline gap-2.5">
+                    <span className="font-mono text-3xl font-semibold tabular-nums tracking-tight text-ink">
+                      <KineticNumber value={metrics ? metrics.riskScore : 0} decimals={1} />
                     </span>
-                    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-subtle">
-                      <div
-                        className={cn('h-full rounded-full transition-all', meta.dot)}
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
-                    <span className="w-8 text-right font-mono tabular-nums text-ink">{count}</span>
+                    <span className="text-xs text-ink-secondary">
+                      综合风险指数 · {metrics?.riskLevel || 'low'}
+                    </span>
                   </div>
-                )
-              })}
-            </div>
-          </Card>
-
-          <Card className="overflow-hidden">
-            <div className="flex items-center justify-between border-b border-line px-5 py-3">
-              <div className="flex items-center gap-2">
-                <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-                <h2 className="text-sm font-semibold text-ink">需要关注</h2>
+                </div>
+                <Link to="/findings" className="text-xs font-medium text-accent hover:underline">
+                  处置漏洞 →
+                </Link>
               </div>
-              <span className="font-mono text-xs text-ink-muted">
-                {overview?.attention.length || 0}
-              </span>
-            </div>
-            <div className="divide-y divide-line">
-              {!overview || overview.attention.length === 0 ? (
-                <p className="px-5 py-6 text-center text-xs text-ink-muted">
-                  暂无待处理告警或异常配置
-                </p>
-              ) : (
-                overview.attention.map((item, idx) => (
-                  <div key={`${item.kind}-${idx}`} className="px-5 py-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-medium text-ink">{item.title}</span>
-                      {item.count > 0 && (
-                        <Badge className="font-mono tabular-nums">{item.count}</Badge>
-                      )}
+
+              <div className="mt-5 space-y-2.5">
+                {SEVERITIES.map((sev) => {
+                  const count = breakdownMap.get(sev) || 0
+                  const pct = totalSeverity > 0 ? Math.round((count / totalSeverity) * 100) : 0
+                  const meta = SEVERITY_META[sev]
+                  return (
+                    <div key={sev} className="flex items-center gap-3 text-xs">
+                      <span className="flex w-12 items-center gap-1.5 text-ink-secondary">
+                        <span className={cn('h-2 w-2 rounded-full', meta.dot)} />
+                        {meta.label}
+                      </span>
+                      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-subtle">
+                        <div
+                          className={cn('h-full rounded-full transition-all duration-500', meta.dot)}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                      <span className="w-8 text-right font-mono tabular-nums text-ink">{count}</span>
                     </div>
-                    <p className="mt-0.5 text-xs text-ink-secondary">{item.detail}</p>
-                  </div>
-                ))
-              )}
-            </div>
-          </Card>
+                  )
+                })}
+              </div>
+            </SpotlightCard>
+          </ScrollReveal>
+
+          <ScrollReveal delayMs={130}>
+            <SpotlightCard intensity="subtle" className="overflow-hidden">
+              <div className="flex items-center justify-between border-b border-line px-5 py-3">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+                  <h2 className="text-sm font-semibold text-ink">需要关注</h2>
+                </div>
+                <span className="font-mono text-xs text-ink-muted">
+                  {overview?.attention.length || 0}
+                </span>
+              </div>
+              <div className="divide-y divide-line">
+                {!overview || overview.attention.length === 0 ? (
+                  <p className="px-5 py-6 text-center text-xs text-ink-muted">
+                    暂无待处理告警或异常配置
+                  </p>
+                ) : (
+                  overview.attention.map((item, idx) => (
+                    <div key={`${item.kind}-${idx}`} className="px-5 py-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-medium text-ink">{item.title}</span>
+                        {item.count > 0 && (
+                          <Badge className="font-mono tabular-nums">{item.count}</Badge>
+                        )}
+                      </div>
+                      <p className="mt-0.5 text-xs text-ink-secondary">{item.detail}</p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </SpotlightCard>
+          </ScrollReveal>
         </div>
       </div>
 

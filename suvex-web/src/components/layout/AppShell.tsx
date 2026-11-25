@@ -15,19 +15,18 @@ import { useAuth } from '@/lib/auth'
 import { useTheme } from '@/lib/theme'
 import { cn } from '@/lib/cn'
 import { CommandPalette } from '@/components/layout/CommandPalette'
+import { SuvexAppIcon } from '@/components/ui/AppIcons'
+import { ScrollProgressRail } from '@/components/ui/MotionPrimitives'
 
 export function BrandMark({ compact = false }: { compact?: boolean }) {
   return (
     <div className="flex items-center gap-2.5">
-      <div className="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-ink text-canvas shadow-sm">
-        <span className="font-mono text-xs font-bold tracking-tighter">S2</span>
-        <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full border-2 border-canvas bg-accent" />
-      </div>
+      <SuvexAppIcon size={30} animated />
       {!compact && (
         <div className="flex items-baseline gap-1.5">
           <span className="text-sm font-semibold tracking-[-0.02em] text-ink">Suvex</span>
-          <span className="rounded bg-accent-soft px-1.5 py-0.5 font-mono text-[10px] font-medium text-accent-ink">
-            2.0
+          <span className="rounded-md border border-accent/25 bg-accent-soft px-1.5 py-0.5 font-mono text-[10px] font-semibold text-accent-ink">
+            2.1
           </span>
         </div>
       )}
@@ -148,13 +147,16 @@ export function AppShell({ children }: { children?: ReactNode }) {
                         to={item.path}
                         title={isCompact ? item.label : undefined}
                         className={cn(
-                          'group flex items-center gap-2.5 rounded-lg text-[13px] font-medium transition-colors',
+                          'group relative flex items-center gap-2.5 rounded-lg text-[13px] font-medium transition-all duration-150',
                           isCompact ? 'justify-center p-2' : 'px-2.5 py-1.5',
                           active
                             ? 'bg-surface text-ink shadow-editorial ring-1 ring-line'
-                            : 'text-ink-secondary hover:bg-wash/70 hover:text-ink',
+                            : 'text-ink-secondary hover:translate-x-[1px] hover:bg-wash/70 hover:text-ink',
                         )}
                       >
+                        {active && !isCompact && (
+                          <span className="absolute left-0 top-1.5 bottom-1.5 w-[2.5px] rounded-full bg-accent" />
+                        )}
                         <Icon
                           className={cn(
                             'h-4 w-4 shrink-0 transition-colors',
@@ -241,6 +243,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
         fillsViewport ? 'h-screen overflow-hidden' : 'min-h-screen',
       )}
     >
+      {!fillsViewport && <ScrollProgressRail />}
       {/* Desktop Sidebar */}
       <aside
         className={cn(

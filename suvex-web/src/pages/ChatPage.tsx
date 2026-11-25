@@ -53,6 +53,8 @@ import type {
   ProviderOut,
 } from '@/types/api'
 import { Badge, Button, Drawer, EmptyState, Modal, Select } from '@/components/ui/primitives'
+import { DotWarpCanvas, SpotlightCard } from '@/components/ui/ShaderCanvas'
+import { SuvexAppIcon } from '@/components/ui/AppIcons'
 import { MarkdownView } from '@/components/ui/MarkdownView'
 import { ChallengeCockpit } from '@/components/chat/ChallengeCockpit'
 import { SessionRail } from '@/components/chat/SessionRail'
@@ -1662,31 +1664,54 @@ export function ChatPage() {
             ) : (
               <>
                 {(!detail || displayBlocks.length === 0) && !detail?.challenge ? (
-                  <div className="py-10">
-                    <EmptyState
-                      icon={<MessagesSquare className="h-5 w-5" />}
-                      title="向 Suvex 2 智能体下达安全任务"
-                      description="支持绑定自定义 Agent 角色画像与远程 HTTP MCP（如 ctf2-suvex），具备执行轨迹折叠、代码一键复制、分支 Fork 与攻击链可视化。"
-                      action={
-                        <div className="grid gap-2 sm:grid-cols-2">
-                          {[
-                            '帮我检查当前平台的沙箱、模型与已挂载 MCP 工具状态',
-                            '列出 CTF2 练习场里可做的 Web/Pwn 题目并开始解题',
-                            '总结最近一次扫描中已确证的高危漏洞与修复建议',
-                            '分析一份 Web 登录接口可能存在的认证绕过攻击面',
-                          ].map((prompt) => (
-                            <button
-                              key={prompt}
-                              type="button"
-                              onClick={() => setInput(prompt)}
-                              className="rounded-xl border border-line bg-surface px-3.5 py-2.5 text-left text-xs text-ink-secondary shadow-editorial transition-colors hover:border-accent/50 hover:text-ink"
-                            >
-                              {prompt}
-                            </button>
-                          ))}
-                        </div>
-                      }
-                    />
+                  <div className="relative overflow-hidden rounded-2xl border border-line bg-surface/80 px-6 py-10 shadow-editorial">
+                    <div className="pointer-events-none absolute inset-0 z-0 opacity-70">
+                      <DotWarpCanvas gap={26} />
+                    </div>
+                    <div className="relative z-10 mx-auto flex max-w-2xl flex-col items-center text-center">
+                      <SuvexAppIcon size={54} animated className="mb-4" />
+                      <h2 className="text-lg font-semibold tracking-[-0.02em] text-ink">
+                        <span className="kinetic-gradient-text">向 Suvex 2 智能体下达安全任务</span>
+                      </h2>
+                      <p className="mt-2 max-w-lg text-xs leading-relaxed text-ink-secondary">
+                        支持绑定自定义 Agent 角色画像与远程 HTTP MCP（如 ctf2-suvex），具备执行轨迹折叠、代码一键复制、分支 Fork 与攻击链可视化。
+                      </p>
+                      <div className="mt-6 grid w-full gap-2.5 sm:grid-cols-2">
+                        {[
+                          {
+                            tag: '环境自检',
+                            prompt: '帮我检查当前平台的沙箱、模型与已挂载 MCP 工具状态',
+                          },
+                          {
+                            tag: 'CTF 协同',
+                            prompt: '列出 CTF2 练习场里可做的 Web/Pwn 题目并开始解题',
+                          },
+                          {
+                            tag: '漏洞复盘',
+                            prompt: '总结最近一次扫描中已确证的高危漏洞与修复建议',
+                          },
+                          {
+                            tag: '攻击面审计',
+                            prompt: '分析一份 Web 登录接口可能存在的认证绕过攻击面',
+                          },
+                        ].map((item) => (
+                          <SpotlightCard
+                            key={item.prompt}
+                            intensity="normal"
+                            onClick={() => setInput(item.prompt)}
+                            className="cursor-pointer bg-surface/90 p-3.5 text-left backdrop-blur transition-transform duration-200 hover:-translate-y-0.5 hover:border-accent/50"
+                          >
+                            <span className="inline-flex items-center gap-1 font-mono text-[10px] font-medium text-accent">
+                              <MessagesSquare className="h-3 w-3" />
+                              {item.tag}
+                            </span>
+                            <p className="mt-1 text-xs leading-relaxed text-ink-secondary">
+                              {item.prompt}
+                            </p>
+                          </SpotlightCard>
+                        ))}
+                      </div>
+                    </div>
                   </div>
                 ) : (
                   displayBlocks.map((block) => {

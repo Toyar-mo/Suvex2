@@ -1,12 +1,15 @@
 import { useState, type FormEvent } from 'react'
 import { Link, Navigate, useNavigate } from 'react-router-dom'
-import { ArrowRight, Check, Lock, Moon, Shield, Sun } from 'lucide-react'
+import { ArrowRight, Check, Moon, Shield, Sun } from 'lucide-react'
 import { api, ApiClientError } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
 import { useTheme } from '@/lib/theme'
 import { checkPasswordStrength } from '@/lib/format'
 import { BrandMark } from '@/components/layout/AppShell'
-import { Button, Card, Input } from '@/components/ui/primitives'
+import { Button, Input } from '@/components/ui/primitives'
+import { DotWarpCanvas, MeshAuroraShader, SpotlightCard } from '@/components/ui/ShaderCanvas'
+import { SuvexAppIcon } from '@/components/ui/AppIcons'
+import { ScrollReveal } from '@/components/ui/MotionPrimitives'
 import { cn } from '@/lib/cn'
 
 function AuthCanvas({
@@ -21,36 +24,50 @@ function AuthCanvas({
   const { theme, toggleTheme } = useTheme()
 
   return (
-    <div className="editorial-grid flex min-h-screen flex-col justify-between bg-canvas px-4 py-8 text-ink">
-      <div className="mx-auto flex w-full max-w-5xl items-center justify-between">
+    <div className="relative flex min-h-screen flex-col justify-between overflow-hidden bg-canvas px-4 py-8 text-ink">
+      {/* Live WebGL Mesh Aurora + Cursor-Reactive Dot Matrix Backdrop */}
+      <div className="pointer-events-none absolute inset-0 z-0">
+        <MeshAuroraShader palette="indigo" speed={0.85} className="opacity-90" />
+        <div className="absolute inset-0 opacity-75">
+          <DotWarpCanvas gap={30} />
+        </div>
+        <div className="absolute inset-0 bg-gradient-to-b from-canvas/30 via-transparent to-canvas/75" />
+      </div>
+
+      <div className="relative z-10 mx-auto flex w-full max-w-5xl items-center justify-between">
         <Link to="/">
           <BrandMark />
         </Link>
         <button
           type="button"
           onClick={toggleTheme}
-          className="rounded-lg border border-line bg-surface p-2 text-ink-secondary hover:border-line-strong hover:text-ink"
+          className="rounded-lg border border-line bg-surface/80 p-2 text-ink-secondary backdrop-blur transition-colors hover:border-line-strong hover:text-ink"
           aria-label="切换主题"
         >
           {theme === 'light' ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
         </button>
       </div>
 
-      <main className="mx-auto my-10 w-full max-w-[420px]">
-        <Card className="p-7 shadow-elevated">
-          <div className="mb-6">
-            <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl border border-line bg-subtle text-ink">
-              <Lock className="h-4 w-4" />
+      <main className="relative z-10 mx-auto my-10 w-full max-w-[432px]">
+        <ScrollReveal>
+          <SpotlightCard
+            intensity="vivid"
+            className="border-line-strong/70 bg-surface/85 p-7 shadow-dialog backdrop-blur-xl"
+          >
+            <div className="mb-6">
+              <div className="mb-4 inline-flex">
+                <SuvexAppIcon size={48} animated />
+              </div>
+              <h1 className="text-xl font-semibold tracking-[-0.025em] text-ink">{title}</h1>
+              <p className="mt-1.5 text-xs leading-relaxed text-ink-secondary">{subtitle}</p>
             </div>
-            <h1 className="text-xl font-semibold tracking-[-0.02em] text-ink">{title}</h1>
-            <p className="mt-1 text-xs leading-relaxed text-ink-secondary">{subtitle}</p>
-          </div>
-          {children}
-        </Card>
+            {children}
+          </SpotlightCard>
+        </ScrollReveal>
       </main>
 
-      <p className="text-center font-mono text-[11px] text-ink-muted">
-        Suvex 2 · HttpOnly Session + SameSite=Strict
+      <p className="relative z-10 text-center font-mono text-[11px] text-ink-muted">
+        Suvex 2.1 · Autonomous Security Workbench · HttpOnly Session + SameSite=Strict
       </p>
     </div>
   )
