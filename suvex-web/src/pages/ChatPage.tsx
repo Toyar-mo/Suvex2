@@ -687,8 +687,8 @@ export function ChatPage() {
   }, [activeId, searchParams])
 
   const loadDetail = useCallback(
-    async (id: string) => {
-      setLoadingDetail(true)
+    async (id: string, opts?: { silent?: boolean }) => {
+      if (!opts?.silent) setLoadingDetail(true)
       try {
         const [d, ctx, tds, trns, fls] = await Promise.all([
           api.getChatSession(id, 180),
@@ -705,9 +705,11 @@ export function ChatPage() {
         if (d.providerId) setSelectedProviderId(d.providerId)
         setSelectedProfileId(d.agentProfileId || '')
       } catch (err) {
-        push(err instanceof ApiClientError ? err.message : '加载会话失败', 'error')
+        if (!opts?.silent) {
+          push(err instanceof ApiClientError ? err.message : '加载会话失败', 'error')
+        }
       } finally {
-        setLoadingDetail(false)
+        if (!opts?.silent) setLoadingDetail(false)
       }
     },
     [push],
@@ -760,12 +762,53 @@ export function ChatPage() {
     el.style.height = `${Math.min(Math.max(el.scrollHeight, 44), 180)}px`
   }, [input])
 
-  // Auto-reattach live polling if user opens/refreshes a running session
+  const activeSessionSummary = useMemo(
+    () => sessions.find((s) => s.id === activeId) || null,
+    [sessions, activeId],
+  )
+
+  const isServerRunning = Boolean(
+    detail?.running ||
+      activeSessionSummary?.running ||
+      turns.some((t) => t.status === 'running'),
+  )
+
+  // Abort active client fetch cleanly on unmount (server turn stays durable & keeps running)
   useEffect(() => {
-    if (!activeId || !detail?.running || streaming) return
+    return () => {
+      abortRef.current?.abort()
+    }
+  }, [])
+
+  // Auto-reattach live event hub whenever user opens / returns to a running session
+  useEffect(() => {
+    if (!activeId || !isServerRunning || streaming) return
     let alive = true
     let cursor = 0
-    setStreamPhase('已自动续接后台运行中的智能体轮次…')
+    let bufText = ''
+    let bufReasoning = ''
+    let bufToolOut = ''
+    let curPhase: string | null = '已自动续接后台运行中的智能体轮次…'
+
+    setStreamText('')
+    setStreamReasoning('')
+    setLiveToolOut('')
+    setStreamPhase(curPhase)
+
+    const formatPhase = (data: Record<string, unknown>): string => {
+      const p = String(data.phase || '')
+      if (p === 'thinking') {
+        const round = typeof data.round === 'number' ? data.round + 1 : null
+        return round ? `后台运行中 · 第 ${round} 轮思考中…` : '后台运行中 · 思考中…'
+      }
+      if (p === 'tool') {
+        return `后台运行中 · 正在调用工具 ${String(data.tool || '')}…`
+      }
+      if (p === 'resume') {
+        return '后台运行中 · 正在自动纠偏续跑…'
+      }
+      return p ? `后台运行中 · ${p}` : '后台运行中…'
+    }
 
     const poll = async () => {
       while (alive) {
@@ -773,39 +816,105 @@ export function ChatPage() {
           const snap = await api.pollChatLive(activeId, cursor)
           if (!alive) break
           cursor = snap.next
+
+          const appended: ChatMessageOut[] = []
+          let gotDone = false
+
           for (const frame of snap.frames) {
-            if (frame.event === 'delta' && typeof frame.data.text === 'string') {
-              setStreamText((prev) => prev + String(frame.data.text))
-            } else if (frame.event === 'reasoning' && typeof frame.data.text === 'string') {
-              setStreamReasoning((prev) => prev + String(frame.data.text))
+            const data = (frame.data || {}) as Record<string, unknown>
+            if (frame.event === 'delta' && typeof data.text === 'string') {
+              bufText += data.text
+            } else if (frame.event === 'reasoning' && typeof data.text === 'string') {
+              bufReasoning += data.text
+            } else if (frame.event === 'tool_output') {
+              const chunk =
+                typeof data.chunk === 'string'
+                  ? data.chunk
+                  : typeof data.text === 'string'
+                    ? data.text
+                    : ''
+              if (chunk) bufToolOut = (bufToolOut + chunk).slice(-4000)
+            } else if (frame.event === 'tool_progress') {
+              const tool = typeof data.tool === 'string' ? data.tool : '工具'
+              const sec = typeof data.seconds === 'number' ? data.seconds : null
+              curPhase = sec != null ? `后台运行中 · ${tool} 执行中（${sec}s）…` : `后台运行中 · ${tool} 执行中…`
             } else if (frame.event === 'phase') {
-              setStreamPhase(`后台运行中 · ${String(frame.data.phase || '')}`)
+              curPhase = formatPhase(data)
+            } else if (frame.event === 'awaiting') {
+              curPhase = '等待人工审批工具调用'
             } else if (frame.event === 'message') {
-              setStreamText('')
-              setStreamReasoning('')
-              const m = frame.data as unknown as ChatMessageOut
-              setDetail((prev) => {
-                if (!prev || prev.messages.some((x) => x.id === m.id)) return prev
-                return { ...prev, messages: [...prev.messages, m] }
-              })
+              bufText = ''
+              bufReasoning = ''
+              bufToolOut = ''
+              appended.push(data as unknown as ChatMessageOut)
+            } else if (frame.event === 'done') {
+              gotDone = true
+            } else if (frame.event === 'error' && typeof data.message === 'string') {
+              push(data.message, 'error')
             }
           }
-          if (snap.ended) {
+
+          if (appended.length > 0) {
+            setDetail((prev) => {
+              if (!prev) return prev
+              const existing = new Set(prev.messages.map((x) => x.id))
+              const fresh = appended.filter((m) => m.id && !existing.has(m.id))
+              if (fresh.length === 0) return prev
+              return { ...prev, messages: [...prev.messages, ...fresh] }
+            })
+          }
+
+          setStreamText(bufText)
+          setStreamReasoning(bufReasoning)
+          setLiveToolOut(bufToolOut)
+          setStreamPhase(curPhase)
+
+          if (snap.ended || gotDone) {
             setStreamPhase(null)
-            await loadDetail(activeId)
-            await loadSessions()
+            setStreamText('')
+            setStreamReasoning('')
+            setLiveToolOut('')
+            await Promise.all([loadDetail(activeId, { silent: true }), loadSessions()])
             break
           }
+
+          // Fallback sync: if hub returned 0 frames (e.g. background resumer run or long tool),
+          // refresh DB snapshot silently so newly persisted tool/assistant messages still show up.
+          if (snap.frames.length === 0) {
+            const [freshDetail, freshTurns] = await Promise.all([
+              api.getChatSession(activeId, 180).catch(() => null),
+              api.getChatTurns(activeId).catch(() => null),
+            ])
+            if (!alive) break
+            if (freshDetail) setDetail(freshDetail)
+            if (freshTurns) {
+              setTurns(freshTurns)
+              const stillRunning = freshTurns.some((t) => t.status === 'running')
+              if (!stillRunning) {
+                setStreamPhase(null)
+                setStreamText('')
+                setStreamReasoning('')
+                setLiveToolOut('')
+                await loadSessions()
+                break
+              }
+            }
+          }
         } catch {
-          break
+          if (!alive) break
+          await new Promise((r) => window.setTimeout(r, 1500))
         }
       }
     }
     void poll()
     return () => {
       alive = false
+      setStreamPhase(null)
+      setStreamText('')
+      setStreamReasoning('')
+      setLiveToolOut('')
     }
-  }, [activeId, detail?.running, streaming, loadDetail, loadSessions])
+  }, [activeId, isServerRunning, streaming, loadDetail, loadSessions, push])
 
   const scrollToBottom = useCallback((smooth = true) => {
     bottomRef.current?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto' })
@@ -1161,7 +1270,7 @@ export function ChatPage() {
       }
     }
 
-    if (streaming || detail?.running) {
+    if (streaming || isServerRunning) {
       try {
         const msg = await api.interjectChat(sid, text)
         setDetail((prev) => (prev ? { ...prev, messages: [...prev.messages, msg] } : prev))
@@ -1246,12 +1355,12 @@ export function ChatPage() {
         },
         ctrl.signal,
       )
-      await Promise.all([loadDetail(sid), loadSessions()])
+      await Promise.all([loadDetail(sid, { silent: true }), loadSessions()])
     } catch (err) {
       if ((err as Error).name !== 'AbortError') {
         push(err instanceof ApiClientError ? err.message : '对话请求中断', 'error')
+        await loadDetail(sid, { silent: true })
       }
-      await loadDetail(sid)
     } finally {
       setStreaming(false)
       setStreamPhase(null)
@@ -1506,7 +1615,7 @@ export function ChatPage() {
         )}
 
         {/* Resumable Interrupted Turn Banner */}
-        {resumableTurn && !streaming && !detail?.running && (
+        {resumableTurn && !streaming && !isServerRunning && (
           <div className="shrink-0 border-b border-amber-200 bg-amber-50/80 px-5 py-2.5 dark:border-amber-900/60 dark:bg-amber-950/40">
             <div className="mx-auto flex max-w-4xl items-center justify-between gap-3 text-xs">
               <span className="text-amber-900 dark:text-amber-200">
@@ -1701,7 +1810,7 @@ export function ChatPage() {
                   }
                 }}
                 placeholder={
-                  streaming || detail?.running
+                  streaming || isServerRunning
                     ? '智能体执行中，可直接输入补充线索或指令（将在下一轮读取）…'
                     : '输入安全指令、粘贴题目描述、或下达工具/MCP 编排任务…'
                 }
@@ -1742,7 +1851,7 @@ export function ChatPage() {
                   <span className="hidden text-[11px] text-ink-muted sm:inline">
                     Enter 发送 · Shift+Enter 换行
                   </span>
-                  {(streaming || detail?.running) && !input.trim() ? (
+                  {(streaming || isServerRunning) && !input.trim() ? (
                     <Button variant="danger" size="sm" onClick={handleStop} className="h-8 px-3">
                       <Square className="h-3 w-3" />
                       停止
@@ -1756,7 +1865,7 @@ export function ChatPage() {
                       className="h-8 px-3.5"
                     >
                       <Send className="h-3.5 w-3.5" />
-                      {streaming || detail?.running ? '插话' : '发送'}
+                      {streaming || isServerRunning ? '插话' : '发送'}
                     </Button>
                   )}
                 </div>

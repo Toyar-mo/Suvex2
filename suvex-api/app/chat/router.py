@@ -358,8 +358,11 @@ def get_session(
     )
     # 增量刷新（after）永远不是"更早的一段"，hasEarlier 只对整页/翻页有意义
     has_earlier = bool(messages) and after is None and messages[0].seq > 1
+    running = session.id in turn_runs.running_session_ids(db, session_ids=[session.id])
+    base = ChatSessionOut.model_validate(session).model_dump()
+    base["running"] = running
     return ChatSessionDetailOut(
-        **ChatSessionOut.model_validate(session).model_dump(),
+        **base,
         messages=[ChatMessageOut.model_validate(m) for m in messages],
         hasEarlier=has_earlier,
         challenge=_challenge_ref(db, session),
