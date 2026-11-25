@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Activity,
@@ -6,8 +6,11 @@ import {
   ArrowUpRight,
   BarChart3,
   Box,
+  CheckCircle2,
+  Compass,
   Cpu,
   Flag,
+  Flame,
   GitBranch,
   MessagesSquare,
   Plus,
@@ -16,6 +19,10 @@ import {
   ScanSearch,
   ShieldAlert,
   ShieldCheck,
+  Sparkles,
+  Terminal,
+  Wrench,
+  XCircle,
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import {
@@ -39,6 +46,157 @@ import { Badge, Button, Card, EmptyState, PageHeader, Skeleton } from '@/compone
 import { cn } from '@/lib/cn'
 
 const SEVERITIES: Severity[] = ['critical', 'high', 'medium', 'low', 'info']
+
+const OVERVIEW_PHASE_LABEL: Record<string, string> = {
+  recon: '侦察',
+  scan: '探测',
+  exploit: '利用',
+  verify: '验证',
+  report: '报告',
+}
+
+interface FeedVisual {
+  label: string
+  group: 'tool' | 'finding' | 'alert' | 'other'
+  nodeCls: string
+  badgeCls: string
+  icon: 'tool' | 'reasoning' | 'discovery' | 'poc' | 'verified' | 'blocked' | 'failed'
+}
+
+function feedVisualFor(type: string): FeedVisual {
+  switch (type.toLowerCase()) {
+    case 'tool_call':
+      return {
+        label: '工具执行',
+        group: 'tool',
+        nodeCls: 'border-indigo-400/40 bg-indigo-500/10 text-indigo-500 dark:text-indigo-400',
+        badgeCls:
+          'border-indigo-300/60 bg-indigo-50/70 text-indigo-700 dark:border-indigo-800/70 dark:bg-indigo-950/60 dark:text-indigo-300',
+        icon: 'tool',
+      }
+    case 'reasoning':
+      return {
+        label: '推理思考',
+        group: 'other',
+        nodeCls: 'border-violet-400/40 bg-violet-500/10 text-violet-500 dark:text-violet-400',
+        badgeCls:
+          'border-violet-300/60 bg-violet-50/70 text-violet-700 dark:border-violet-800/70 dark:bg-violet-950/60 dark:text-violet-300',
+        icon: 'reasoning',
+      }
+    case 'discovery':
+      return {
+        label: '新发现',
+        group: 'finding',
+        nodeCls: 'border-sky-400/40 bg-sky-500/10 text-sky-500 dark:text-sky-400',
+        badgeCls:
+          'border-sky-300/60 bg-sky-50/70 text-sky-700 dark:border-sky-800/70 dark:bg-sky-950/60 dark:text-sky-300',
+        icon: 'discovery',
+      }
+    case 'poc_generated':
+      return {
+        label: '候选产物',
+        group: 'finding',
+        nodeCls: 'border-amber-400/40 bg-amber-500/10 text-amber-500 dark:text-amber-400',
+        badgeCls:
+          'border-amber-300/70 bg-amber-50/70 text-amber-800 dark:border-amber-800/70 dark:bg-amber-950/60 dark:text-amber-300',
+        icon: 'poc',
+      }
+    case 'verified':
+    case 'completed':
+      return {
+        label: type.toLowerCase() === 'verified' ? '已确证' : '任务完成',
+        group: 'finding',
+        nodeCls: 'border-emerald-400/40 bg-emerald-500/10 text-emerald-500 dark:text-emerald-400',
+        badgeCls:
+          'border-emerald-300/70 bg-emerald-50/70 text-emerald-700 dark:border-emerald-800/70 dark:bg-emerald-950/60 dark:text-emerald-300',
+        icon: 'verified',
+      }
+    case 'blocked':
+      return {
+        label: '受阻重试',
+        group: 'alert',
+        nodeCls: 'border-amber-400/40 bg-amber-500/10 text-amber-500 dark:text-amber-400',
+        badgeCls:
+          'border-amber-300/70 bg-amber-50/70 text-amber-800 dark:border-amber-800/70 dark:bg-amber-950/60 dark:text-amber-300',
+        icon: 'blocked',
+      }
+    case 'failed':
+      return {
+        label: '执行异常',
+        group: 'alert',
+        nodeCls: 'border-red-400/40 bg-red-500/10 text-red-500 dark:text-red-400',
+        badgeCls:
+          'border-red-300/70 bg-red-50/70 text-red-700 dark:border-red-900/70 dark:bg-red-950/60 dark:text-red-300',
+        icon: 'failed',
+      }
+    default:
+      return {
+        label: type || '事件',
+        group: 'other',
+        nodeCls: 'border-line bg-subtle text-ink-muted',
+        badgeCls: 'border-line bg-subtle text-ink-secondary',
+        icon: 'discovery',
+      }
+  }
+}
+
+function FeedNodeIcon({ kind }: { kind: FeedVisual['icon'] }) {
+  const cls = 'h-3.5 w-3.5'
+  switch (kind) {
+    case 'tool':
+      return <Terminal className={cls} />
+    case 'reasoning':
+      return <Sparkles className={cls} />
+    case 'discovery':
+      return <Compass className={cls} />
+    case 'poc':
+      return <Flame className={cls} />
+    case 'verified':
+      return <CheckCircle2 className={cls} />
+    case 'blocked':
+      return <ShieldAlert className={cls} />
+    case 'failed':
+      return <XCircle className={cls} />
+    default:
+      return <Wrench className={cls} />
+  }
+}
+
+function formatOverviewAgent(agentId: string): string {
+  const suffix = agentId.includes(':') ? agentId.split(':').slice(1).join(':') : agentId
+  if (suffix === 'ctf2-solver') return 'CTF2 解题智能体'
+  if (suffix.startsWith('agent-')) return `协作节点 ${suffix.slice(6)}`
+  return suffix.length > 22 ? `${suffix.slice(0, 12)}…${suffix.slice(-6)}` : suffix || '智能体'
+}
+
+function parseProjectedRow(ev: ProjectedActivity): {
+  toolName: string | null
+  text: string
+  extraSubject: string | null
+} {
+  let text = (ev.summary || '').trim()
+  text = text.replace(/[\s…]*[（(]已截断[，,]?\s*原长\s*\d+\s*字符[）)]\s*$/, '').trim()
+  text = text.replace(/[\s…]*[（(]已截断[，,]?\s*…*$/, '…').trim()
+
+  let toolName: string | null = null
+  if (ev.type.toLowerCase() === 'tool_call') {
+    const m = text.match(/^([a-zA-Z0-9_.-]{2,40})\s+([\s\S]+)$/)
+    if (m) {
+      toolName = m[1]
+      text = m[2].trim()
+    }
+  }
+
+  const subj = (ev.subject || '').trim()
+  const extraSubject =
+    subj &&
+    !text.includes(subj.slice(0, Math.min(24, subj.length))) &&
+    subj !== toolName
+      ? subj
+      : null
+
+  return { toolName, text: text || ev.type, extraSubject }
+}
 
 function TokenTrendChart({
   trend,
@@ -134,6 +292,7 @@ export function OverviewPage() {
   const [scans, setScans] = useState<ScanOut[]>([])
   const [queue, setQueue] = useState<ScanStatsOut | null>(null)
   const [liveActivity, setLiveActivity] = useState<ProjectedActivity[]>([])
+  const [feedFilter, setFeedFilter] = useState<'all' | 'tool' | 'finding' | 'alert'>('all')
   const [sseLive, setSseLive] = useState(false)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -199,6 +358,16 @@ export function OverviewPage() {
     })
     return () => es.close()
   }, [])
+
+  const scanNameMap = useMemo(
+    () => new Map(scans.map((s) => [s.id, s.name || s.target || s.id])),
+    [scans],
+  )
+
+  const filteredFeed = useMemo(() => {
+    if (feedFilter === 'all') return liveActivity
+    return liveActivity.filter((ev) => feedVisualFor(ev.type).group === feedFilter)
+  }, [liveActivity, feedFilter])
 
   const metrics = overview?.metrics
   const breakdownMap = new Map(
@@ -308,66 +477,176 @@ export function OverviewPage() {
       {/* Section 1: Process First — Live Activity + Risk & Attention */}
       <div className="grid gap-6 lg:grid-cols-12">
         <Card className="flex flex-col overflow-hidden lg:col-span-7">
-          <div className="flex items-center justify-between border-b border-line px-5 py-3.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-5 py-3">
             <div className="flex items-center gap-2">
-              <Activity className="h-4 w-4 text-accent" />
+              <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-accent-soft text-accent">
+                <Activity className="h-3.5 w-3.5" />
+              </div>
               <h2 className="text-sm font-semibold text-ink">实时智能体活动流</h2>
+              {sseLive && (
+                <span className="inline-flex items-center gap-1 rounded-full border border-emerald-300/60 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:border-emerald-800/70 dark:text-emerald-400">
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
+                  实时
+                </span>
+              )}
             </div>
-            <Link to="/activity" className="text-xs text-ink-muted hover:text-ink">
-              查看全部 →
-            </Link>
+
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-0.5 rounded-lg border border-line bg-subtle p-0.5 text-[11px]">
+                {(
+                  [
+                    { id: 'all', label: '全部' },
+                    { id: 'tool', label: '工具' },
+                    { id: 'finding', label: '发现' },
+                    { id: 'alert', label: '异常' },
+                  ] as const
+                ).map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setFeedFilter(tab.id)}
+                    className={cn(
+                      'rounded-md px-2 py-0.5 font-medium transition-colors',
+                      feedFilter === tab.id
+                        ? 'bg-surface text-ink shadow-editorial'
+                        : 'text-ink-muted hover:text-ink',
+                    )}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+              <Link
+                to="/activity"
+                className="inline-flex items-center gap-0.5 text-xs font-medium text-ink-muted transition-colors hover:text-accent"
+              >
+                全部
+                <ArrowUpRight className="h-3.5 w-3.5" />
+              </Link>
+            </div>
           </div>
 
-          <div className="flex-1 divide-y divide-line">
+          <div className="max-h-[540px] flex-1 overflow-y-auto px-5 py-3">
             {loading ? (
-              <div className="space-y-3 p-5">
-                <Skeleton className="h-10 w-full" />
-                <Skeleton className="h-10 w-full" />
-                <Skeleton className="h-10 w-full" />
+              <div className="space-y-3 py-2">
+                <Skeleton className="h-14 w-full" />
+                <Skeleton className="h-14 w-full" />
+                <Skeleton className="h-14 w-full" />
               </div>
-            ) : liveActivity.length === 0 ? (
-              <div className="p-6">
+            ) : filteredFeed.length === 0 ? (
+              <div className="py-6">
                 <EmptyState
                   icon={<Activity className="h-4 w-4" />}
-                  title="当前暂无智能体活动事件"
-                  description="发起一次扫描或在对话工作台指派任务后，智能体的每一步推理与工具调用都会通过异步 EventBus 实时推送到这里。"
+                  title={
+                    liveActivity.length > 0
+                      ? '当前分类暂无事件'
+                      : '当前暂无智能体活动事件'
+                  }
+                  description={
+                    liveActivity.length > 0
+                      ? '可切换回「全部」查看全部实时执行轨迹。'
+                      : '发起一次扫描或在对话工作台指派任务后，智能体的每一步推理与工具调用都会通过异步 EventBus 实时推送到这里。'
+                  }
                   action={
-                    <Link to="/scans?new=1">
-                      <Button variant="primary" size="sm">
-                        发起第一次扫描
+                    liveActivity.length > 0 ? (
+                      <Button variant="secondary" size="sm" onClick={() => setFeedFilter('all')}>
+                        查看全部事件
                       </Button>
-                    </Link>
+                    ) : (
+                      <Link to="/scans?new=1">
+                        <Button variant="primary" size="sm">
+                          发起第一次扫描
+                        </Button>
+                      </Link>
+                    )
                   }
                 />
               </div>
             ) : (
-              liveActivity.slice(0, 8).map((ev) => (
-                <Link
-                  key={ev.id}
-                  to={`/activity?scan=${encodeURIComponent(ev.scanId)}`}
-                  className="flex items-start justify-between gap-4 px-5 py-3.5 transition-colors hover:bg-subtle/60"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="rounded bg-subtle px-1.5 py-0.5 font-mono text-[10px] font-medium text-ink-secondary">
-                        {ev.agentPhase}
-                      </span>
-                      <span className="font-mono text-[11px] text-ink-muted">{ev.agentId}</span>
-                      {ev.subject && (
-                        <span className="truncate font-mono text-[11px] text-accent">
-                          {ev.subject}
-                        </span>
-                      )}
-                    </div>
-                    <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-ink">
-                      {ev.summary}
-                    </p>
-                  </div>
-                  <span className="shrink-0 font-mono text-[11px] tabular-nums text-ink-muted">
-                    {formatRelativeTime(ev.at)}
-                  </span>
-                </Link>
-              ))
+              <div className="relative space-y-2.5">
+                {filteredFeed.slice(0, 10).map((ev, idx, arr) => {
+                  const vis = feedVisualFor(ev.type)
+                  const phaseLabel =
+                    OVERVIEW_PHASE_LABEL[ev.agentPhase.toLowerCase()] || ev.agentPhase
+                  const scanTitle = scanNameMap.get(ev.scanId)
+                  const agentLabel = formatOverviewAgent(ev.agentId)
+                  const parsed = parseProjectedRow(ev)
+                  const isTool = ev.type.toLowerCase() === 'tool_call'
+                  const isLast = idx === arr.length - 1
+
+                  return (
+                    <Link
+                      key={ev.id}
+                      to={`/activity?scan=${encodeURIComponent(ev.scanId)}`}
+                      className="group relative flex items-start gap-3 rounded-xl border border-transparent p-2.5 transition-all hover:border-line hover:bg-subtle/70"
+                    >
+                      {/* Vertical Timeline Rail + Node */}
+                      <div className="relative flex shrink-0 flex-col items-center">
+                        <div
+                          className={cn(
+                            'z-10 flex h-7 w-7 items-center justify-center rounded-lg border',
+                            vis.nodeCls,
+                          )}
+                        >
+                          <FeedNodeIcon kind={vis.icon} />
+                        </div>
+                        {!isLast && (
+                          <span className="mt-1 h-full min-h-[24px] w-px bg-line-subtle" />
+                        )}
+                      </div>
+
+                      {/* Event Body */}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                            <Badge className={cn('text-[10px]', vis.badgeCls)}>
+                              {vis.label}
+                            </Badge>
+                            <span className="rounded-md border border-line-subtle bg-subtle px-1.5 py-0.5 text-[10px] font-medium text-ink-secondary">
+                              {phaseLabel}
+                            </span>
+                            {parsed.toolName && (
+                              <span className="rounded-md bg-canvas px-1.5 py-0.5 font-mono text-[10px] text-ink">
+                                {parsed.toolName}
+                              </span>
+                            )}
+                            <span
+                              className="truncate text-[11px] text-ink-muted"
+                              title={scanTitle || ev.agentId}
+                            >
+                              {scanTitle || agentLabel}
+                            </span>
+                          </div>
+
+                          <div className="flex shrink-0 items-center gap-1 font-mono text-[11px] tabular-nums text-ink-muted">
+                            <span>{formatRelativeTime(ev.at)}</span>
+                            <ArrowUpRight className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-100" />
+                          </div>
+                        </div>
+
+                        {parsed.extraSubject && (
+                          <p className="mt-1 truncate text-[11px] font-medium text-accent">
+                            {parsed.extraSubject}
+                          </p>
+                        )}
+
+                        {isTool ? (
+                          <div className="mt-1.5 rounded-lg border border-line-subtle bg-canvas/80 px-2.5 py-1.5 font-mono text-[11px] leading-relaxed text-ink-secondary">
+                            <p className="line-clamp-2 break-all">
+                              <span className="mr-1.5 select-none text-accent">$</span>
+                              {parsed.text}
+                            </p>
+                          </div>
+                        ) : (
+                          <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-ink">
+                            {parsed.text}
+                          </p>
+                        )}
+                      </div>
+                    </Link>
+                  )
+                })}
+              </div>
             )}
           </div>
         </Card>
