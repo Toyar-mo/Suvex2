@@ -53,8 +53,8 @@ import type {
   ProviderOut,
 } from '@/types/api'
 import { Badge, Button, Drawer, EmptyState, Modal, Select } from '@/components/ui/primitives'
-import { DotWarpCanvas, SpotlightCard } from '@/components/ui/ShaderCanvas'
-import { SuvexAppIcon } from '@/components/ui/AppIcons'
+import { DotWarpCanvas, MeshAuroraShader, SpotlightCard } from '@/components/ui/ShaderCanvas'
+import { SuvexAppIcon, TactileAppIcon } from '@/components/ui/AppIcons'
 import { MarkdownView } from '@/components/ui/MarkdownView'
 import { ChallengeCockpit } from '@/components/chat/ChallengeCockpit'
 import { SessionRail } from '@/components/chat/SessionRail'
@@ -1433,8 +1433,13 @@ export function ChatPage() {
 
       {/* Main Conversation Canvas (Pinned Header + Scrollable Stream + Pinned Composer) */}
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        {/* Session Header Bar */}
-        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2.5 border-b border-line bg-surface/95 px-4 py-2.5 backdrop-blur">
+        {/* Session Header Bar (with subtle ambient WebGL shader ribbon) */}
+        <div className="relative shrink-0 overflow-hidden border-b border-line bg-surface/95 px-4 py-2.5 backdrop-blur">
+          <div className="pointer-events-none absolute inset-0 z-0 opacity-35">
+            <MeshAuroraShader palette={detail?.challenge ? 'ctf' : 'indigo'} speed={0.55} />
+            <div className="absolute inset-0 bg-gradient-to-r from-surface/92 via-surface/85 to-surface/90" />
+          </div>
+          <div className="relative z-10 flex flex-wrap items-center justify-between gap-2.5">
           <div className="flex min-w-0 flex-1 items-center gap-2.5">
             <button
               type="button"
@@ -1444,6 +1449,8 @@ export function ChatPage() {
             >
               <PanelLeft className="h-4 w-4" />
             </button>
+
+            <TactileAppIcon variant={detail?.challenge ? 'ctf' : 'chat'} size={30} />
 
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
@@ -1585,6 +1592,7 @@ export function ChatPage() {
                 </a>
               </>
             )}
+          </div>
           </div>
         </div>
 

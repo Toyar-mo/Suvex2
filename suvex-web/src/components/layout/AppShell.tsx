@@ -15,7 +15,7 @@ import { useAuth } from '@/lib/auth'
 import { useTheme } from '@/lib/theme'
 import { cn } from '@/lib/cn'
 import { CommandPalette } from '@/components/layout/CommandPalette'
-import { SuvexAppIcon } from '@/components/ui/AppIcons'
+import { ModuleTactileIcon, SuvexAppIcon } from '@/components/ui/AppIcons'
 import { ScrollProgressRail } from '@/components/ui/MotionPrimitives'
 
 export function BrandMark({ compact = false }: { compact?: boolean }) {
@@ -157,13 +157,13 @@ export function AppShell({ children }: { children?: ReactNode }) {
                         {active && !isCompact && (
                           <span className="absolute left-0 top-1.5 bottom-1.5 w-[2.5px] rounded-full bg-accent" />
                         )}
-                        <Icon
-                          className={cn(
-                            'h-4 w-4 shrink-0 transition-colors',
-                            active ? 'text-accent' : 'text-ink-muted group-hover:text-ink',
-                          )}
-                          strokeWidth={1.8}
-                        />
+                        {active ? (
+                          <ModuleTactileIcon moduleId={item.id} icon={Icon} size="xs" />
+                        ) : (
+                          <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] text-ink-muted transition-colors group-hover:bg-surface group-hover:text-ink">
+                            <Icon className="h-3.5 w-3.5" strokeWidth={1.8} />
+                          </span>
+                        )}
                         {!isCompact && <span className="truncate">{item.label}</span>}
                       </Link>
                     )
@@ -312,7 +312,13 @@ export function AppShell({ children }: { children?: ReactNode }) {
               : 'mx-auto w-full max-w-[1260px] px-5 py-7 sm:px-8 sm:py-9',
           )}
         >
-          {children ?? <Outlet />}
+          {fillsViewport ? (
+            children ?? <Outlet />
+          ) : (
+            <div key={pathname} className="page-enter">
+              {children ?? <Outlet />}
+            </div>
+          )}
         </main>
       </div>
 

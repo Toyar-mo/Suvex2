@@ -9,7 +9,12 @@ import {
   type TextareaHTMLAttributes,
 } from 'react'
 import { createPortal } from 'react-dom'
+import { useLocation } from 'react-router-dom'
 import { Check, ChevronDown, Loader2, X } from 'lucide-react'
+import { NAV_ITEMS, isNavActive } from '@/navigation'
+import { DotWarpCanvas, MeshAuroraShader } from '@/components/ui/ShaderCanvas'
+import { MODULE_THEMES, ModuleTactileIcon } from '@/components/ui/AppIcons'
+import { ScrollReveal } from '@/components/ui/MotionPrimitives'
 import { cn } from '@/lib/cn'
 
 /* Button */
@@ -56,7 +61,7 @@ export function Button({
   )
 }
 
-/* Card */
+/* Card (Cursor-reactive subtle spotlight across all workspace pages) */
 export function Card({
   className,
   children,
@@ -64,10 +69,21 @@ export function Card({
   className?: string
   children: ReactNode
 }) {
+  const ref = useRef<HTMLDivElement | null>(null)
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const el = ref.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    el.style.setProperty('--spot-x', `${e.clientX - rect.left}px`)
+    el.style.setProperty('--spot-y', `${e.clientY - rect.top}px`)
+  }
   return (
     <div
+      ref={ref}
+      onPointerMove={onPointerMove}
+      data-spot-intensity="subtle"
       className={cn(
-        'rounded-editorial border border-line bg-surface shadow-editorial',
+        'spotlight-card rounded-editorial border border-line bg-surface shadow-editorial transition-colors duration-200 hover:border-line-strong/80',
         className,
       )}
     >
@@ -368,7 +384,7 @@ export function Select({
   )
 }
 
-/* Editorial Page Header */
+/* Editorial Page Header (auto-attaches WebGL MeshAuroraShader + Soft-3D Module Icon) */
 export function PageHeader({
   eyebrow,
   title,
@@ -380,25 +396,51 @@ export function PageHeader({
   description?: string
   actions?: ReactNode
 }) {
+  const { pathname } = useLocation()
+  const navItem = NAV_ITEMS.find((item) => isNavActive(item, pathname))
+  const modTheme = (navItem && MODULE_THEMES[navItem.id]) || MODULE_THEMES.overview
+
   return (
-    <header className="mb-7 flex flex-col gap-3 border-b border-line pb-5 sm:flex-row sm:items-end sm:justify-between">
-      <div className="min-w-0">
-        {eyebrow && (
-          <p className="mb-1 text-[11px] font-medium uppercase tracking-[0.12em] text-ink-muted">
-            {eyebrow}
-          </p>
-        )}
-        <h1 className="text-2xl font-semibold tracking-[-0.025em] text-ink">{title}</h1>
-        {description && (
-          <p className="mt-1 max-w-2xl text-sm text-ink-secondary">{description}</p>
-        )}
-      </div>
-      {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
-    </header>
+    <ScrollReveal>
+      <header className="relative mb-7 overflow-hidden rounded-2xl border border-line bg-surface px-6 py-5 shadow-elevated">
+        {/* Ambient WebGL Mesh Aurora + Fluted Glass Backdrop */}
+        <div className="pointer-events-none absolute inset-0 z-0 opacity-70">
+          <MeshAuroraShader palette={modTheme.shader} speed={0.7} />
+          <div className="fluted-glass absolute inset-0 opacity-25" />
+          <div className="absolute inset-0 bg-gradient-to-r from-surface/94 via-surface/78 to-surface/58" />
+        </div>
+
+        <div className="relative z-10 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-start gap-3.5">
+            {navItem && (
+              <ModuleTactileIcon moduleId={navItem.id} icon={navItem.icon} size="md" className="mt-0.5" />
+            )}
+            <div className="min-w-0">
+              {eyebrow && (
+                <p className="mb-1 font-mono text-[11px] font-medium uppercase tracking-[0.13em] text-accent">
+                  {eyebrow}
+                </p>
+              )}
+              <h1 className="text-2xl font-semibold tracking-[-0.025em] text-ink">
+                <span className="kinetic-gradient-text">{title}</span>
+              </h1>
+              {description && (
+                <p className="mt-1 max-w-2xl text-xs leading-relaxed text-ink-secondary sm:text-sm">
+                  {description}
+                </p>
+              )}
+            </div>
+          </div>
+          {actions && (
+            <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>
+          )}
+        </div>
+      </header>
+    </ScrollReveal>
   )
 }
 
-/* Empty State */
+/* Empty State (with interactive DotWarp ambient backdrop) */
 export function EmptyState({
   icon,
   title,
@@ -411,15 +453,22 @@ export function EmptyState({
   action?: ReactNode
 }) {
   return (
-    <div className="flex flex-col items-center justify-center rounded-editorial border border-dashed border-line-strong bg-subtle/40 px-6 py-14 text-center">
-      {icon && (
-        <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full border border-line bg-surface text-ink-muted">
-          {icon}
-        </div>
-      )}
-      <h3 className="text-sm font-medium text-ink">{title}</h3>
-      {description && <p className="mt-1 max-w-md text-xs text-ink-secondary">{description}</p>}
-      {action && <div className="mt-4">{action}</div>}
+    <div className="relative flex flex-col items-center justify-center overflow-hidden rounded-2xl border border-dashed border-line-strong/80 bg-surface/60 px-6 py-14 text-center">
+      <div className="pointer-events-none absolute inset-0 z-0 opacity-55">
+        <DotWarpCanvas gap={26} />
+      </div>
+      <div className="relative z-10 flex flex-col items-center">
+        {icon && (
+          <div className="mb-3.5 flex h-11 w-11 items-center justify-center rounded-xl border border-line bg-surface text-accent shadow-editorial">
+            {icon}
+          </div>
+        )}
+        <h3 className="text-sm font-semibold text-ink">{title}</h3>
+        {description && (
+          <p className="mt-1.5 max-w-md text-xs leading-relaxed text-ink-secondary">{description}</p>
+        )}
+        {action && <div className="mt-5">{action}</div>}
+      </div>
     </div>
   )
 }

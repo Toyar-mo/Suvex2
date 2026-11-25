@@ -1,4 +1,6 @@
 import { useId } from 'react'
+import type { LucideIcon } from 'lucide-react'
+import type { ShaderPalette } from '@/components/ui/ShaderCanvas'
 import { cn } from '@/lib/cn'
 
 /* --------------------------------------------------------------------------
@@ -257,5 +259,81 @@ export function TactileAppIcon({
         </>
       )}
     </svg>
+  )
+}
+
+/* --------------------------------------------------------------------------
+   Per-Module Tactile Soft-3D Squircle Badge (covers all 20 workspace modules)
+   -------------------------------------------------------------------------- */
+
+export interface ModuleVisualTheme {
+  from: string
+  to: string
+  rim: string
+  glow: string
+  shader: ShaderPalette
+}
+
+export const MODULE_THEMES: Record<string, ModuleVisualTheme> = {
+  overview: { from: '#4F46E5', to: '#1E1B4B', rim: 'rgba(199,210,254,0.55)', glow: 'rgba(99,102,241,0.34)', shader: 'indigo' },
+  chat: { from: '#7C3AED', to: '#2E1065', rim: 'rgba(221,214,254,0.55)', glow: 'rgba(124,58,237,0.34)', shader: 'indigo' },
+  scans: { from: '#2563EB', to: '#1E3A8A', rim: 'rgba(191,219,254,0.55)', glow: 'rgba(37,99,235,0.34)', shader: 'ctf' },
+  missions: { from: '#6366F1', to: '#3B0764', rim: 'rgba(224,231,255,0.55)', glow: 'rgba(99,102,241,0.34)', shader: 'studio' },
+  activity: { from: '#10B981', to: '#064E3B', rim: 'rgba(167,243,208,0.55)', glow: 'rgba(16,185,129,0.32)', shader: 'ctf' },
+  intranet: { from: '#475569', to: '#1E1B4B', rim: 'rgba(203,213,225,0.50)', glow: 'rgba(99,102,241,0.28)', shader: 'studio' },
+  findings: { from: '#E11D48', to: '#7F1D1D', rim: 'rgba(254,205,211,0.55)', glow: 'rgba(225,29,72,0.32)', shader: 'studio' },
+  assets: { from: '#0284C7', to: '#1E3A8A', rim: 'rgba(186,230,253,0.55)', glow: 'rgba(2,132,199,0.32)', shader: 'ctf' },
+  reports: { from: '#4F46E5', to: '#0F172A', rim: 'rgba(199,210,254,0.55)', glow: 'rgba(79,70,229,0.32)', shader: 'indigo' },
+  credentials: { from: '#D97706', to: '#78350F', rim: 'rgba(253,230,138,0.55)', glow: 'rgba(217,119,6,0.32)', shader: 'studio' },
+  files: { from: '#0D9488', to: '#134E4A', rim: 'rgba(153,246,228,0.55)', glow: 'rgba(13,148,136,0.32)', shader: 'ctf' },
+  ctf: { from: '#0EA5E9', to: '#312E81', rim: 'rgba(186,230,253,0.60)', glow: 'rgba(14,165,233,0.35)', shader: 'ctf' },
+  ir: { from: '#EF4444', to: '#7C2D12', rim: 'rgba(254,202,202,0.55)', glow: 'rgba(239,68,68,0.32)', shader: 'studio' },
+  schedules: { from: '#8B5CF6', to: '#312E81', rim: 'rgba(221,214,254,0.55)', glow: 'rgba(139,92,246,0.32)', shader: 'indigo' },
+  tools: { from: '#EC4899', to: '#4C1D95', rim: 'rgba(251,207,232,0.55)', glow: 'rgba(236,72,153,0.32)', shader: 'studio' },
+  skills: { from: '#059669', to: '#1E3A8A', rim: 'rgba(167,243,208,0.55)', glow: 'rgba(5,150,105,0.32)', shader: 'ctf' },
+  agents: { from: '#6366F1', to: '#0F172A', rim: 'rgba(199,210,254,0.55)', glow: 'rgba(99,102,241,0.34)', shader: 'indigo' },
+  approvals: { from: '#F59E0B', to: '#1E3A8A', rim: 'rgba(253,230,138,0.55)', glow: 'rgba(245,158,11,0.30)', shader: 'studio' },
+  models: { from: '#06B6D4', to: '#312E81', rim: 'rgba(165,243,252,0.55)', glow: 'rgba(6,182,212,0.32)', shader: 'indigo' },
+  settings: { from: '#64748B', to: '#1E293B', rim: 'rgba(226,232,240,0.50)', glow: 'rgba(100,116,139,0.28)', shader: 'studio' },
+}
+
+export function ModuleTactileIcon({
+  moduleId,
+  icon: Icon,
+  size = 'md',
+  className,
+}: {
+  moduleId: string
+  icon: LucideIcon
+  size?: 'xs' | 'sm' | 'md'
+  className?: string
+}) {
+  const theme = MODULE_THEMES[moduleId] || MODULE_THEMES.overview
+  const boxCls =
+    size === 'xs'
+      ? 'h-6 w-6 rounded-[7px]'
+      : size === 'sm'
+        ? 'h-8 w-8 rounded-[10px]'
+        : 'h-11 w-11 rounded-[13px]'
+  const iconCls = size === 'xs' ? 'h-3.5 w-3.5' : size === 'sm' ? 'h-4 w-4' : 'h-5 w-5'
+
+  return (
+    <span
+      style={{
+        background: `linear-gradient(145deg, ${theme.from} 0%, ${theme.to} 100%)`,
+        boxShadow: `inset 0 1px 0 ${theme.rim}, 0 6px 14px -4px ${theme.glow}`,
+      }}
+      className={cn(
+        'relative inline-flex shrink-0 items-center justify-center overflow-hidden text-white transition-transform duration-200 ease-out hover:-translate-y-0.5',
+        boxCls,
+        className,
+      )}
+      aria-hidden="true"
+    >
+      <span
+        className="pointer-events-none absolute inset-x-1 top-0 h-[42%] rounded-b-full bg-white/20"
+      />
+      <Icon className={cn('relative z-10', iconCls)} strokeWidth={2} />
+    </span>
   )
 }

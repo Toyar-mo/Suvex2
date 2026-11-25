@@ -36,6 +36,8 @@ import { useToast } from '@/lib/toast'
 import { formatDuration, formatRelativeTime, SCAN_STATUS_META } from '@/lib/format'
 import type { ActivityEventOut, AgentOut, ScanOut } from '@/types/api'
 import { Badge, Button, EmptyState, Select } from '@/components/ui/primitives'
+import { MeshAuroraShader } from '@/components/ui/ShaderCanvas'
+import { TactileAppIcon } from '@/components/ui/AppIcons'
 import { cn } from '@/lib/cn'
 
 /* --------------------------------------------------------------------------
@@ -686,14 +688,19 @@ export function ActivityPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-canvas">
-      {/* Top Telemetry Bar */}
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-line bg-surface/95 px-5 py-3 backdrop-blur">
+      {/* Top Telemetry Bar (with ambient WebGL shader ribbon + soft-3D icon) */}
+      <div className="relative shrink-0 overflow-hidden border-b border-line bg-surface/95 px-5 py-3 backdrop-blur">
+        <div className="pointer-events-none absolute inset-0 z-0 opacity-45">
+          <MeshAuroraShader palette="ctf" speed={0.65} />
+          <div className="absolute inset-0 bg-gradient-to-r from-surface/92 via-surface/82 to-surface/90" />
+        </div>
+        <div className="relative z-10 flex flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 flex-wrap items-center gap-2.5">
-          <div className="flex items-center gap-2">
-            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-accent-soft text-accent">
-              <Activity className="h-4 w-4" />
-            </div>
-            <h1 className="whitespace-nowrap text-sm font-semibold text-ink">智能体实时活动流</h1>
+          <div className="flex items-center gap-2.5">
+            <TactileAppIcon variant="activity" size={32} />
+            <h1 className="whitespace-nowrap text-sm font-semibold text-ink">
+              <span className="kinetic-gradient-text">智能体实时活动流</span>
+            </h1>
           </div>
 
           <Select
@@ -774,6 +781,7 @@ export function ActivityPage() {
               {autoScroll ? '自动跟随' : '已暂停'}
             </Button>
           )}
+        </div>
         </div>
       </div>
 
