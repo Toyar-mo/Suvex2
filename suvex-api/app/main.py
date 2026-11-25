@@ -31,6 +31,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 # 这个 import 有副作用：把全部 ORM 模型注册到 Base.metadata。
 # 缺了它，metadata 是空的 —— 测试里的建表、以及 alembic 的 autogenerate
@@ -384,6 +386,25 @@ async def lifespan(_app: FastAPI):
         logger.info("Suvex API 已停止")
 
 
+class SseSafeGZipMiddleware:
+    """对大体积 JSON/文本响应启用 GZip（压缩率 ~80%），同时显式跳过 SSE/NDJSON 流式接口，
+    确保对话与活动流零缓冲逐帧实时抵达浏览器。"""
+
+    _SKIP_SUFFIXES = ("/events", "/stream", "/export", "/download")
+
+    def __init__(self, app: ASGIApp, minimum_size: int = 1024) -> None:
+        self.app = app
+        self.gzip_app = GZipMiddleware(app, minimum_size=minimum_size)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            path = scope.get("path", "")
+            if path.endswith(self._SKIP_SUFFIXES):
+                await self.app(scope, receive, send)
+                return
+        await self.gzip_app(scope, receive, send)
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
 
@@ -503,6 +524,8 @@ def create_app() -> FastAPI:
         # 自定义响应头默认对 JS 不可见，必须显式放出来。
         expose_headers=["Retry-After"],
     )
+
+    app.add_middleware(SseSafeGZipMiddleware, minimum_size=1024)
 
     if settings.metrics_enabled:
         app.add_middleware(MetricsMiddleware)

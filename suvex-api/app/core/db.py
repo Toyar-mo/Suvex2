@@ -143,6 +143,7 @@ def configure(database_url: str | None = None, *, echo: bool | None = None, forc
     else:
         kwargs["pool_size"] = cfg.db_pool_size
         kwargs["max_overflow"] = cfg.db_max_overflow
+        kwargs["pool_recycle"] = 1800
 
     _engine = create_engine(url, **kwargs)
     _session_factory = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)

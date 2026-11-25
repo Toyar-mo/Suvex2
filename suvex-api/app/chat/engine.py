@@ -2987,6 +2987,8 @@ _TOOL_IMPLS: dict[str, Any] = {
     # ★ v0.107：执行类工具。实现在 `app/chat/sandbox.py` —— 那里复用
     #   内核的 `_tool_run_shell` / `run_browser`，不抄一份。
     "run_shell": chat_sandbox.tool_run_shell,
+    "write_workspace_file": chat_sandbox.tool_write_workspace_file,
+    "read_workspace_file": chat_sandbox.tool_read_workspace_file,
     "browser": chat_sandbox.tool_browser,
     "load_skill": _tool_load_skill,
     "load_recipe": _tool_load_recipe,

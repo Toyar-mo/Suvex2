@@ -15,6 +15,8 @@ import type {
   ChatMcpStatusOut,
   ChatMessageOut,
   ChatPersonaOut,
+  ChatSandboxExecOut,
+  ChatSandboxStatusOut,
   ChatSessionDetailOut,
   ChatSessionOut,
   ChatSessionTreeOut,
@@ -196,6 +198,75 @@ export interface ChatStreamCallbacks {
   onAwaiting?: (payload: { messageId: string }) => void
   onDone?: (payload: { messageCount?: number; awaitingApproval?: string | null }) => void
   onError?: (message: string) => void
+}
+
+async function consumeChatSse(
+  res: Response,
+  callbacks: ChatStreamCallbacks,
+): Promise<void> {
+  const reader = res.body?.getReader()
+  if (!reader) return
+
+  const decoder = new TextDecoder('utf-8')
+  let buffer = ''
+  let eventName = 'message'
+  let dataLines: string[] = []
+
+  const flushEvent = () => {
+    if (dataLines.length === 0) return
+    const raw = dataLines.join('\n')
+    const evt = eventName
+    eventName = 'message'
+    dataLines = []
+
+    let parsed: Record<string, unknown> | null = null
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>
+    } catch {
+      return
+    }
+
+    if (evt === 'phase') {
+      callbacks.onPhase?.(parsed as { phase: string; round?: number; tool?: string; reason?: string })
+    } else if (evt === 'delta') {
+      if (typeof parsed.text === 'string') callbacks.onDelta?.(parsed.text)
+    } else if (evt === 'reasoning') {
+      if (typeof parsed.text === 'string') callbacks.onReasoning?.(parsed.text)
+    } else if (evt === 'tool_output') {
+      callbacks.onToolOutput?.(parsed as { tool?: string; text?: string; chunk?: string })
+    } else if (evt === 'tool_progress') {
+      callbacks.onToolProgress?.(parsed as { tool?: string; seconds?: number })
+    } else if (evt === 'message') {
+      callbacks.onMessage?.(parsed as unknown as ChatMessageOut)
+    } else if (evt === 'awaiting') {
+      callbacks.onAwaiting?.(parsed as { messageId: string })
+    } else if (evt === 'done') {
+      callbacks.onDone?.(parsed as { messageCount?: number; awaitingApproval?: string | null })
+    } else if (evt === 'error') {
+      callbacks.onError?.(typeof parsed.message === 'string' ? parsed.message : '本轮对话失败')
+    }
+  }
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split(/\r?\n/)
+    buffer = lines.pop() ?? ''
+
+    for (const line of lines) {
+      if (line === '') {
+        flushEvent()
+      } else if (line.startsWith(':')) {
+        continue
+      } else if (line.startsWith('event:')) {
+        eventName = line.slice(6).trim()
+      } else if (line.startsWith('data:')) {
+        dataLines.push(line.slice(5).trimStart())
+      }
+    }
+  }
+  flushEvent()
 }
 
 export const api = {
@@ -403,6 +474,34 @@ export const api = {
       `/chat/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/resume`,
       { method: 'POST' },
     ),
+  getChatSandboxStatus: (sessionId: string) =>
+    request<ChatSandboxStatusOut>(`/chat/sessions/${encodeURIComponent(sessionId)}/sandbox`),
+  resetChatSandbox: (sessionId: string) =>
+    request<ChatSandboxStatusOut>(`/chat/sessions/${encodeURIComponent(sessionId)}/sandbox/reset`, {
+      method: 'POST',
+    }),
+  execChatSandbox: (sessionId: string, command: string, timeoutSeconds = 30) =>
+    request<ChatSandboxExecOut>(`/chat/sessions/${encodeURIComponent(sessionId)}/sandbox/exec`, {
+      method: 'POST',
+      body: JSON.stringify({ command, timeoutSeconds }),
+    }),
+  attachChatStream: async (
+    sessionId: string,
+    callbacks: ChatStreamCallbacks,
+    signal?: AbortSignal,
+  ) => {
+    const res = await fetch(`${API_BASE}/chat/sessions/${encodeURIComponent(sessionId)}/stream`, {
+      method: 'GET',
+      credentials: 'include',
+      headers: { Accept: 'text/event-stream' },
+      signal,
+    })
+    if (res.status === 401) notifyUnauthorized()
+    if (!res.ok) {
+      throw new ApiClientError(res.status, `HTTP_${res.status}`, `续接流失败（HTTP ${res.status}）`)
+    }
+    await consumeChatSse(res, callbacks)
+  },
   streamChatMessage: async (
     sessionId: string,
     payload: { content: string; providerId?: string | null; attachmentIds?: string[] },
@@ -433,69 +532,7 @@ export const api = {
       throw new ApiClientError(res.status, code, msg)
     }
 
-    const reader = res.body?.getReader()
-    if (!reader) return
-
-    const decoder = new TextDecoder('utf-8')
-    let buffer = ''
-    let eventName = 'message'
-    let dataLines: string[] = []
-
-    const flushEvent = () => {
-      if (dataLines.length === 0) return
-      const raw = dataLines.join('\n')
-      const evt = eventName
-      eventName = 'message'
-      dataLines = []
-
-      let parsed: Record<string, unknown> | null = null
-      try {
-        parsed = JSON.parse(raw) as Record<string, unknown>
-      } catch {
-        return
-      }
-
-      if (evt === 'phase') {
-        callbacks.onPhase?.(parsed as { phase: string; round?: number; tool?: string; reason?: string })
-      } else if (evt === 'delta') {
-        if (typeof parsed.text === 'string') callbacks.onDelta?.(parsed.text)
-      } else if (evt === 'reasoning') {
-        if (typeof parsed.text === 'string') callbacks.onReasoning?.(parsed.text)
-      } else if (evt === 'tool_output') {
-        callbacks.onToolOutput?.(parsed as { tool?: string; text?: string; chunk?: string })
-      } else if (evt === 'tool_progress') {
-        callbacks.onToolProgress?.(parsed as { tool?: string; seconds?: number })
-      } else if (evt === 'message') {
-        callbacks.onMessage?.(parsed as unknown as ChatMessageOut)
-      } else if (evt === 'awaiting') {
-        callbacks.onAwaiting?.(parsed as { messageId: string })
-      } else if (evt === 'done') {
-        callbacks.onDone?.(parsed as { messageCount?: number; awaitingApproval?: string | null })
-      } else if (evt === 'error') {
-        callbacks.onError?.(typeof parsed.message === 'string' ? parsed.message : '本轮对话失败')
-      }
-    }
-
-    while (true) {
-      const { value, done } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split(/\r?\n/)
-      buffer = lines.pop() ?? ''
-
-      for (const line of lines) {
-        if (line === '') {
-          flushEvent()
-        } else if (line.startsWith(':')) {
-          continue
-        } else if (line.startsWith('event:')) {
-          eventName = line.slice(6).trim()
-        } else if (line.startsWith('data:')) {
-          dataLines.push(line.slice(5).trimStart())
-        }
-      }
-    }
-    flushEvent()
+    await consumeChatSse(res, callbacks)
   },
 
   /* CTF / Kernel */

@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Any
 
 from app.core.config import get_settings
@@ -39,29 +39,61 @@ REDIS_END = "__end__"
 _log = logging.getLogger(__name__)
 
 
+def _approx_payload_size(payload: dict[str, Any]) -> int:
+    """快速估算单帧载荷字符量（避免每 token 全量序列化整个缓冲区）。"""
+    total = 24
+    for k, v in payload.items():
+        total += len(k)
+        if isinstance(v, str):
+            total += len(v)
+        elif isinstance(v, (int, float, bool)) or v is None:
+            total += 8
+        else:
+            total += len(str(v))
+    return total
+
+
 class LiveTurnHub:
-    """进程内实现。保留它作为默认后端，也是测试用的确定性后端。"""
+    """进程内实现。O(1) 环形缓冲 + 事件即时唤醒（避免 O(N²) 扫描与 100ms 忙等）。"""
 
     def __init__(self) -> None:
-        self._buffer: dict[str, list[tuple[str, dict[str, Any]]]] = defaultdict(list)
+        self._buffer: dict[str, deque[tuple[str, dict[str, Any], int]]] = defaultdict(deque)
+        self._char_counts: dict[str, int] = defaultdict(int)
+        self._total_pushed: dict[str, int] = defaultdict(int)
         self._subscribers: dict[str, set[asyncio.Queue]] = defaultdict(set)
+        self._waiters: dict[str, set[asyncio.Event]] = defaultdict(set)
         self._ended: set[str] = set()
         self._lock = asyncio.Lock()
 
+    def _wake_waiters(self, session_id: str) -> None:
+        waiters = self._waiters.get(session_id)
+        if waiters:
+            for ev in list(waiters):
+                ev.set()
+
     async def begin(self, session_id: str) -> None:
         async with self._lock:
-            self._buffer[session_id] = []
+            self._buffer[session_id] = deque()
+            self._char_counts[session_id] = 0
+            self._total_pushed[session_id] = 0
             self._ended.discard(session_id)
+            self._wake_waiters(session_id)
 
     async def publish(self, session_id: str, event: str, payload: dict[str, Any]) -> None:
+        size = _approx_payload_size(payload)
         async with self._lock:
             buf = self._buffer[session_id]
-            buf.append((event, payload))
+            buf.append((event, payload, size))
+            self._char_counts[session_id] += size
+            self._total_pushed[session_id] += 1
             while len(buf) > MAX_BUFFER_FRAMES:
-                buf.pop(0)
-            while sum(len(str(p)) for _, p in buf) > MAX_BUFFER_CHARS and len(buf) > 1:
-                buf.pop(0)
+                _, _, old_size = buf.popleft()
+                self._char_counts[session_id] = max(0, self._char_counts[session_id] - old_size)
+            while self._char_counts[session_id] > MAX_BUFFER_CHARS and len(buf) > 1:
+                _, _, old_size = buf.popleft()
+                self._char_counts[session_id] = max(0, self._char_counts[session_id] - old_size)
             subscribers = list(self._subscribers.get(session_id, ()))
+            self._wake_waiters(session_id)
         for queue in subscribers:
             queue.put_nowait((event, payload))
 
@@ -69,6 +101,7 @@ class LiveTurnHub:
         async with self._lock:
             self._ended.add(session_id)
             subscribers = list(self._subscribers.get(session_id, ()))
+            self._wake_waiters(session_id)
         for queue in subscribers:
             queue.put_nowait(None)
 
@@ -77,14 +110,55 @@ class LiveTurnHub:
     ) -> tuple[list[tuple[str, dict[str, Any]]], int, bool]:
         """给长轮询用：返回 `(after 之后的帧, 下一个游标, 是否已结束)`。"""
         async with self._lock:
-            frames = list(self._buffer.get(session_id, ()))
+            buf = self._buffer.get(session_id)
+            total = self._total_pushed.get(session_id, 0)
             ended = session_id in self._ended
-        return frames[max(0, after) :], len(frames), ended
+            if not buf:
+                return [], total, ended
+            base_seq = total - len(buf)
+            start_idx = max(0, after - base_seq)
+            items = [(ev, pl) for ev, pl, _ in list(buf)[start_idx:]]
+        return items, total, ended
+
+    async def wait_snapshot(
+        self, session_id: str, *, after: int = 0, timeout: float = 20.0
+    ) -> tuple[list[tuple[str, dict[str, Any]]], int, bool]:
+        """事件驱动长轮询：无新帧时挂起等待通知，帧一到 <1ms 立即返回。"""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.1, timeout)
+        while True:
+            ev = asyncio.Event()
+            async with self._lock:
+                buf = self._buffer.get(session_id)
+                total = self._total_pushed.get(session_id, 0)
+                ended = session_id in self._ended
+                if buf:
+                    base_seq = total - len(buf)
+                    start_idx = max(0, after - base_seq)
+                    items = [(e, p) for e, p, _ in list(buf)[start_idx:]]
+                else:
+                    items = []
+                if items or ended:
+                    return items, total, ended
+                self._waiters[session_id].add(ev)
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                async with self._lock:
+                    self._waiters[session_id].discard(ev)
+                return [], total, ended
+            try:
+                await asyncio.wait_for(ev.wait(), timeout=remaining)
+            except TimeoutError:
+                return [], total, ended
+            finally:
+                async with self._lock:
+                    self._waiters[session_id].discard(ev)
 
     async def subscribe(self, session_id: str):
         """先回放当前缓冲，再持续产出实时帧；结束/断开时退出。"""
         async with self._lock:
-            snapshot = list(self._buffer.get(session_id, ()))
+            buf = self._buffer.get(session_id)
+            snapshot = [(ev, pl) for ev, pl, _ in buf] if buf else []
             ended = session_id in self._ended
             queue: asyncio.Queue = asyncio.Queue()
             if not ended:
@@ -163,6 +237,17 @@ class RedisLiveTurnHub:
         parsed = [json.loads(row) for row in rows]
         items = [(event, payload) for _, event, payload in parsed]
         return items[max(0, after) :], len(items), bool(await redis.get(ended_key))
+
+    async def wait_snapshot(
+        self, session_id: str, *, after: int = 0, timeout: float = 20.0
+    ) -> tuple[list[tuple[str, dict[str, Any]]], int, bool]:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.1, timeout)
+        while True:
+            items, nxt, ended = await self.snapshot(session_id, after=after)
+            if items or ended or loop.time() >= deadline:
+                return items, nxt, ended
+            await asyncio.sleep(0.1)
 
     async def subscribe(self, session_id: str):
         redis = await self._client()

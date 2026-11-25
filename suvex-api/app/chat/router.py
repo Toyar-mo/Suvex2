@@ -55,7 +55,7 @@ from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 
 from app.agents import service as agents_service
-from app.auth.deps import Identity, require_read
+from app.auth.deps import Identity, require_read, require_scan
 from app.chat import attachments as chat_attachments
 from app.chat import compaction as chat_compaction
 from app.chat import engine, resumer, service, turn_runs
@@ -730,23 +730,55 @@ async def live_snapshot(
     #   把后台标签的定时器压到很晚，表现为「接口请求了、界面几秒不动」。
     #   网络请求本身不受这个节流影响；让等待发生在服务端，响应一到就
     #   立刻发下一次请求，前端不需要定时器。
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + 20.0
-    frames: list[tuple[str, dict[str, object]]] = []
-    next_cursor = after
-    ended = False
-    while True:
-        frames, next_cursor, ended = await chat_live.hub.snapshot(
-            session_id, after=after
-        )
-        if frames or ended or loop.time() >= deadline:
-            break
-        await asyncio.sleep(0.1)
+    frames, next_cursor, ended = await chat_live.hub.wait_snapshot(
+        session_id, after=after, timeout=20.0
+    )
     return {
         "frames": [{"event": event, "data": payload} for event, payload in frames],
         "next": next_cursor,
         "ended": ended,
     }
+
+
+@router.get("/chat/sessions/{session_id}/sandbox", summary="查询当前会话的沙箱容器状态")
+def get_session_sandbox_status(
+    session_id: str,
+    db: DbSession,
+    identity: Reader,
+) -> dict[str, object]:
+    service.get_session_or_404(db, session_id=session_id, created_by=_owner(identity))
+    return chat_sandbox.get_sandbox_status(session_id)
+
+
+@router.post("/chat/sessions/{session_id}/sandbox/reset", summary="重建会话沙箱容器（保留持久工作区）")
+async def reset_session_sandbox(
+    session_id: str,
+    db: DbSession,
+    identity: Annotated[Identity, Depends(require_scan)],
+) -> dict[str, object]:
+    session = service.get_session_or_404(db, session_id=session_id, created_by=_owner(identity))
+    return await asyncio.to_thread(chat_sandbox.reset_sandbox, session)
+
+
+@router.post("/chat/sessions/{session_id}/sandbox/exec", summary="在会话沙箱中直接执行快捷诊断命令")
+async def exec_session_sandbox(
+    session_id: str,
+    payload: dict[str, object],
+    db: DbSession,
+    identity: Annotated[Identity, Depends(require_scan)],
+) -> dict[str, object]:
+    session = service.get_session_or_404(db, session_id=session_id, created_by=_owner(identity))
+    command = str(payload.get("command") or "").strip()
+    if not command:
+        raise ApiError.validation("命令不能为空。", {"command": "请输入要执行的命令"})
+    timeout_raw = payload.get("timeoutSeconds")
+    timeout_seconds = int(timeout_raw) if isinstance(timeout_raw, (int, float)) else 30
+    try:
+        return await chat_sandbox.exec_quick(session, command, timeout_seconds=timeout_seconds)
+    except ValueError as exc:
+        raise ApiError.validation(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise ApiError.internal(f"沙箱执行失败：{exc}") from exc
 
 
 @router.post(

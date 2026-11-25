@@ -308,6 +308,27 @@ export interface ChatSessionOut {
   branchSummary?: string | null
 }
 
+export interface ChatSandboxStatusOut {
+  active: boolean
+  status: 'running' | 'idle'
+  containerName: string | null
+  cpus: number
+  memoryMb: number
+  uptimeSeconds: number
+  idleSeconds: number
+  idleTimeoutSeconds: number
+  execCount: number
+  persistFileCount: number
+  persistPath: string
+}
+
+export interface ChatSandboxExecOut {
+  exitCode: number
+  output: string
+  durationMs: number
+  containerName: string
+}
+
 export interface ChatMcpStatusOut {
   mountedCount: number
   connectedCount: number

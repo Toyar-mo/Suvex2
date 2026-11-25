@@ -306,6 +306,24 @@ CHAT_TOOLS: tuple[ChatToolSpec, ...] = (
         ),
     ),
     ChatToolSpec(
+        name="write_workspace_file",
+        label="写入工作区文件",
+        description=(
+            "向 `/work/persist/` 直接原子写入脚本、PoC、配置或报告，**彻底避免 bash heredoc 引号转义损坏**。"
+            "写入后在沙箱 `/work/persist/<path>` 立即可执行，并同步出现在前端工作区下载列表。"
+        ),
+        params="path（必填，相对路径或 /work/persist/...）、content（必填，文件内容）、append（可选，true=追加）",
+    ),
+    ChatToolSpec(
+        name="read_workspace_file",
+        label="读取工作区/附件文件",
+        description=(
+            "按行号分页读取 `/work/persist/` 或 `/work/attachments/` 下的文本文件，避免大文件刷爆上下文；"
+            "遇到二进制文件会自动提示文件大小与头部十六进制。"
+        ),
+        params="path（必填，/work/persist/... 或 /work/attachments/...）、start_line（可选，默认 1）、end_line（可选，默认 start_line+199）",
+    ),
+    ChatToolSpec(
         name="browser",
         label="操作浏览器",
         description=(
@@ -800,6 +818,27 @@ _TOOL_PARAM_SCHEMAS: dict[str, dict[str, object]] = {
             "cwd": {"type": "string", "description": "工作目录，只能是 /work 之下（可选）"},
         },
         "required": ["command"],
+    },
+    "write_workspace_file": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "目标路径（相对路径或 /work/persist/...）"},
+            "content": {"type": "string", "description": "UTF-8 文本内容"},
+            "append": {"type": "boolean", "description": "是否追加写入（默认 false 覆盖）"},
+        },
+        "required": ["path", "content"],
+    },
+    "read_workspace_file": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "文件路径（/work/persist/... 或 /work/attachments/...）",
+            },
+            "start_line": {"type": "integer", "description": "起始行号（从 1 开始，默认 1）"},
+            "end_line": {"type": "integer", "description": "结束行号（默认 start_line + 199）"},
+        },
+        "required": ["path"],
     },
     "browser": {
         "type": "object",

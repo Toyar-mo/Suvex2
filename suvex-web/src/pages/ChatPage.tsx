@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   ArrowDown,
   Bot,
+  Box,
   Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  Clock,
   Copy,
   Cpu,
   Download,
@@ -57,9 +59,63 @@ import { DotWarpCanvas, MeshAuroraShader, SpotlightCard } from '@/components/ui/
 import { SuvexAppIcon, TactileAppIcon } from '@/components/ui/AppIcons'
 import { MarkdownView } from '@/components/ui/MarkdownView'
 import { ChallengeCockpit } from '@/components/chat/ChallengeCockpit'
+import { SandboxPanel } from '@/components/chat/SandboxPanel'
 import { SessionRail } from '@/components/chat/SessionRail'
 import { SessionSettingsModal } from '@/components/chat/SessionSettingsModal'
 import { cn } from '@/lib/cn'
+
+interface SlashCommandItem {
+  cmd: string
+  label: string
+  hint: string
+  prompt?: string
+  action?: 'compact' | 'reset-sandbox' | 'open-sandbox'
+}
+
+const SLASH_COMMANDS: SlashCommandItem[] = [
+  {
+    cmd: '/ctf',
+    label: '拉取并开解 CTF 题目',
+    hint: '调用 ctf2-suvex MCP 列出可解赛题并分析解题',
+    prompt: '请列出当前 CTF2 练习场里未解出的题目，按难度和分值推荐一道并开始分析解题。',
+  },
+  {
+    cmd: '/scan',
+    label: '发起目标安全评估',
+    hint: '对授权 URL/仓库/服务执行渗透侦察与 PoC 验证',
+    prompt: '请帮我对目标进行全面安全评估（请先确认目标地址、攻击面与可用工具）：',
+  },
+  {
+    cmd: '/sandbox',
+    label: '打开沙箱控制与快捷终端',
+    hint: '查看容器实时配额、状态并直接执行诊断命令',
+    action: 'open-sandbox',
+  },
+  {
+    cmd: '/writeup',
+    label: '沉淀结构化题解/报告',
+    hint: '汇总已验证漏洞或 CTF 利用链并写入 /work/persist',
+    prompt: '请将目前已经确证的漏洞利用链/解题过程整理为结构化 Markdown 报告，并用 write_workspace_file 保存到 /work/persist/report.md。',
+  },
+  {
+    cmd: '/mcp',
+    label: '查看已挂载 MCP 工具',
+    hint: '列出当前会话可用的远程 HTTP / stdio MCP 能力',
+    prompt: '请检查当前会话已挂载的 MCP Server 状态和可用工具列表。',
+  },
+  {
+    cmd: '/compact',
+    label: '立即压缩上下文',
+    hint: '对当前会话历史生成摘要，释放上下文窗口',
+    action: 'compact',
+  },
+  {
+    cmd: '/reset-sandbox',
+    label: '重建干净沙箱容器',
+    hint: '重置临时容器状态，保留 /work/persist 持久产物',
+    action: 'reset-sandbox',
+  },
+]
 
 /* --------------------------------------------------------------------------
    Helpers: Argument preview, Flag extraction, and Message Grouping
@@ -168,7 +224,7 @@ function groupConversationMessages(messages: ChatMessageOut[]): DisplayBlock[] {
    Subcomponents: Reasoning, Execution Trace, User Bubble, Assistant Turn
    -------------------------------------------------------------------------- */
 
-function ReasoningAccordion({
+const ReasoningAccordion = memo(function ReasoningAccordion({
   text,
   streaming,
   compact,
@@ -178,6 +234,13 @@ function ReasoningAccordion({
   compact?: boolean
 }) {
   const [open, setOpen] = useState(Boolean(streaming))
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (streaming && open && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    }
+  }, [text, streaming, open])
+
   return (
     <div
       className={cn(
@@ -191,22 +254,25 @@ function ReasoningAccordion({
         className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] font-medium text-ink-secondary transition-colors hover:text-ink"
       >
         {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-        <Sparkles className="h-3 w-3 text-accent" />
-        <span>{streaming ? '正在推理思考…' : '推理思考过程'}</span>
-        <span className="ml-auto font-mono text-[10px] text-ink-muted">
+        <Sparkles className={cn('h-3 w-3 text-accent', streaming && 'animate-pulse')} />
+        <span>{streaming ? '正在深度推理思考…' : '推理思考过程'}</span>
+        <span className="ml-auto font-mono text-[10px] tabular-nums text-ink-muted">
           {text.length} 字
         </span>
       </button>
       {open && (
-        <div className="max-h-64 overflow-y-auto border-t border-line-subtle px-3 py-2 font-mono text-[11px] leading-relaxed text-ink-secondary whitespace-pre-wrap">
+        <div
+          ref={scrollRef}
+          className="max-h-64 overflow-y-auto border-t border-line-subtle px-3 py-2 font-mono text-[11px] leading-relaxed text-ink-secondary whitespace-pre-wrap"
+        >
           {text}
         </div>
       )}
     </div>
   )
-}
+})
 
-function ToolStepRow({
+const ToolStepRow = memo(function ToolStepRow({
   msg,
   onApprove,
 }: {
@@ -359,9 +425,9 @@ function ToolStepRow({
       )}
     </div>
   )
-}
+})
 
-function ExecutionTraceGroup({
+const ExecutionTraceGroup = memo(function ExecutionTraceGroup({
   items,
   onApprove,
 }: {
@@ -433,9 +499,9 @@ function ExecutionTraceGroup({
       )}
     </div>
   )
-}
+})
 
-function UserMessageBlock({
+const UserMessageBlock = memo(function UserMessageBlock({
   msg,
   onFork,
 }: {
@@ -503,9 +569,9 @@ function UserMessageBlock({
       </div>
     </div>
   )
-}
+})
 
-function AssistantMessageBlock({
+const AssistantMessageBlock = memo(function AssistantMessageBlock({
   msg,
   onFork,
 }: {
@@ -594,7 +660,120 @@ function AssistantMessageBlock({
       )}
     </div>
   )
-}
+})
+
+/* Live Streaming Output Console — RAF-fed 60fps smooth output, elapsed clock & Studio terminal */
+const LiveStreamCard = memo(function LiveStreamCard({
+  phase,
+  round,
+  activeTool,
+  toolSeconds,
+  elapsedSec,
+  reasoning,
+  toolOut,
+  text,
+  onStop,
+}: {
+  phase: string | null
+  round: number | null
+  activeTool: string | null
+  toolSeconds: number | null
+  elapsedSec: number
+  reasoning: string
+  toolOut: string
+  text: string
+  onStop: () => void
+}) {
+  const termRef = useRef<HTMLPreElement | null>(null)
+  const [copiedTerm, setCopiedTerm] = useState(false)
+
+  useEffect(() => {
+    if (termRef.current) {
+      termRef.current.scrollTop = termRef.current.scrollHeight
+    }
+  }, [toolOut])
+
+  const charCount = text.length + reasoning.length
+
+  return (
+    <div className="rounded-2xl border border-accent/40 bg-surface px-5 py-4 shadow-elevated ring-1 ring-accent/10">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-line-subtle pb-2.5 text-xs">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-2 font-medium text-accent">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            {phase || '智能体处理中…'}
+          </span>
+          {round != null && round > 0 && (
+            <span className="rounded-full border border-accent/25 bg-accent-soft px-2 py-0.5 font-mono text-[10px] font-medium text-accent-ink">
+              第 {round} 轮
+            </span>
+          )}
+          {activeTool && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-indigo-300/60 bg-indigo-50 px-2 py-0.5 font-mono text-[10px] text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950/60 dark:text-indigo-300">
+              <Terminal className="h-2.5 w-2.5" />
+              {activeTool}
+              {toolSeconds != null ? ` · ${toolSeconds}s` : ''}
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2.5">
+          <span className="inline-flex items-center gap-1 font-mono text-[10px] tabular-nums text-ink-muted">
+            <Clock className="h-3 w-3" />
+            {elapsedSec.toFixed(1)}s
+            {charCount > 0 ? ` · ${charCount} 字` : ''}
+          </span>
+          <Button size="sm" variant="danger" onClick={onStop}>
+            <Square className="h-3 w-3" />
+            停止执行
+          </Button>
+        </div>
+      </div>
+
+      {reasoning && <ReasoningAccordion text={reasoning} streaming />}
+
+      {toolOut && (
+        <div className="mb-3 overflow-hidden rounded-xl border border-slate-800/90 bg-[#0f121d] text-slate-200 shadow-inner dark:border-line">
+          <div className="flex items-center justify-between gap-2 border-b border-white/10 bg-white/[0.04] px-3 py-1.5 font-mono text-[10px] text-slate-400">
+            <span className="inline-flex items-center gap-2">
+              <span className="flex items-center gap-1">
+                <span className="h-2 w-2 rounded-full bg-red-400/80" />
+                <span className="h-2 w-2 rounded-full bg-amber-400/80" />
+                <span className="h-2 w-2 rounded-full bg-emerald-400/80" />
+              </span>
+              <Terminal className="h-3 w-3 text-indigo-400" />
+              实时终端输出{activeTool ? ` · ${activeTool}` : ''}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                void navigator.clipboard?.writeText(toolOut)
+                setCopiedTerm(true)
+                window.setTimeout(() => setCopiedTerm(false), 1400)
+              }}
+              className="inline-flex items-center gap-1 text-slate-400 hover:text-white"
+            >
+              {copiedTerm ? (
+                <Check className="h-3 w-3 text-emerald-400" />
+              ) : (
+                <Copy className="h-3 w-3" />
+              )}
+              {copiedTerm ? '已复制' : '复制'}
+            </button>
+          </div>
+          <pre
+            ref={termRef}
+            className="max-h-60 overflow-auto whitespace-pre-wrap break-all p-3 font-mono text-[11px] leading-relaxed text-slate-200"
+          >
+            {toolOut}
+          </pre>
+        </div>
+      )}
+
+      {text && <MarkdownView content={text} streaming />}
+    </div>
+  )
+})
 
 function classifyAttackStage(toolName: string): { stage: string; color: string } {
   const n = toolName.toLowerCase()
@@ -649,18 +828,23 @@ export function ChatPage() {
   const [selectedProviderId, setSelectedProviderId] = useState<string>('')
   const [selectedProfileId, setSelectedProfileId] = useState<string>('')
 
-  // Side drawers: Session Tree / Workspace Files & Attack Chain
+  // Side drawers: Session Tree / Workspace Files, Sandbox & Attack Chain
   const [treeOpen, setTreeOpen] = useState(false)
   const [treeData, setTreeData] = useState<ChatSessionTreeOut | null>(null)
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
-  const [workspaceTab, setWorkspaceTab] = useState<'files' | 'chain'>('files')
+  const [workspaceTab, setWorkspaceTab] = useState<'files' | 'sandbox' | 'chain'>('files')
   const [sessionFiles, setSessionFiles] = useState<ChatFileOut[]>([])
 
   const [input, setInput] = useState('')
+  const [slashIndex, setSlashIndex] = useState(0)
   const [attachments, setAttachments] = useState<ChatAttachmentOut[]>([])
   const [uploading, setUploading] = useState(false)
   const [streaming, setStreaming] = useState(false)
   const [streamPhase, setStreamPhase] = useState<string | null>(null)
+  const [streamRound, setStreamRound] = useState<number | null>(null)
+  const [streamTool, setStreamTool] = useState<string | null>(null)
+  const [streamToolSec, setStreamToolSec] = useState<number | null>(null)
+  const [streamElapsedSec, setStreamElapsedSec] = useState(0)
   const [streamText, setStreamText] = useState('')
   const [streamReasoning, setStreamReasoning] = useState('')
   const [liveToolOut, setLiveToolOut] = useState('')
@@ -673,6 +857,47 @@ export function ChatPage() {
   const bottomRef = useRef<HTMLDivElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+
+  // RAF-batched streaming accumulator (prevents 200+ React renders/sec on fast token streams)
+  const streamBufRef = useRef({ text: '', reasoning: '', toolOut: '' })
+  const streamRafRef = useRef<number | null>(null)
+
+  const flushStreamBuf = useCallback(() => {
+    streamRafRef.current = null
+    setStreamText(streamBufRef.current.text)
+    setStreamReasoning(streamBufRef.current.reasoning)
+    setLiveToolOut(streamBufRef.current.toolOut)
+  }, [])
+
+  const scheduleStreamFlush = useCallback(() => {
+    if (streamRafRef.current != null) return
+    streamRafRef.current = window.requestAnimationFrame(flushStreamBuf)
+  }, [flushStreamBuf])
+
+  const resetStreamBuffers = useCallback(() => {
+    if (streamRafRef.current != null) {
+      window.cancelAnimationFrame(streamRafRef.current)
+      streamRafRef.current = null
+    }
+    streamBufRef.current = { text: '', reasoning: '', toolOut: '' }
+    setStreamText('')
+    setStreamReasoning('')
+    setLiveToolOut('')
+  }, [])
+
+  // Smooth live elapsed clock while streaming / reattached
+  useEffect(() => {
+    if (!streaming && !streamPhase) {
+      setStreamElapsedSec(0)
+      return
+    }
+    const startedAt = performance.now()
+    setStreamElapsedSec(0)
+    const id = window.setInterval(() => {
+      setStreamElapsedSec((performance.now() - startedAt) / 1000)
+    }, 200)
+    return () => window.clearInterval(id)
+  }, [streaming, Boolean(streamPhase)])
 
   const loadSessions = useCallback(async () => {
     try {
@@ -782,106 +1007,149 @@ export function ChatPage() {
     }
   }, [])
 
-  // Auto-reattach live event hub whenever user opens / returns to a running session
+  // Auto-reattach live SSE stream (with instant-wake poll fallback) whenever returning to a running session
   useEffect(() => {
     if (!activeId || !isServerRunning || streaming) return
     let alive = true
-    let cursor = 0
-    let bufText = ''
-    let bufReasoning = ''
-    let bufToolOut = ''
-    let curPhase: string | null = '已自动续接后台运行中的智能体轮次…'
+    const ctrl = new AbortController()
 
-    setStreamText('')
-    setStreamReasoning('')
-    setLiveToolOut('')
-    setStreamPhase(curPhase)
+    resetStreamBuffers()
+    setStreamRound(null)
+    setStreamTool(null)
+    setStreamToolSec(null)
+    setStreamPhase('已自动续接后台运行中的智能体实时流…')
 
-    const formatPhase = (data: Record<string, unknown>): string => {
-      const p = String(data.phase || '')
-      if (p === 'thinking') {
-        const round = typeof data.round === 'number' ? data.round + 1 : null
-        return round ? `后台运行中 · 第 ${round} 轮思考中…` : '后台运行中 · 思考中…'
+    const applyPhase = (p: { phase?: string; round?: number; tool?: string }) => {
+      const kind = String(p.phase || '')
+      if (typeof p.round === 'number') setStreamRound(p.round + 1)
+      if (kind === 'thinking') {
+        setStreamTool(null)
+        setStreamToolSec(null)
+        setStreamPhase(
+          typeof p.round === 'number'
+            ? `后台运行中 · 第 ${p.round + 1} 轮思考中…`
+            : '后台运行中 · 思考中…',
+        )
+      } else if (kind === 'tool') {
+        const toolName = String(p.tool || '')
+        setStreamTool(toolName || null)
+        setStreamToolSec(0)
+        setStreamPhase(`后台运行中 · 正在调用工具 ${toolName}…`)
+      } else if (kind === 'resume') {
+        setStreamPhase('后台运行中 · 正在自动纠偏续跑…')
+      } else if (kind) {
+        setStreamPhase(`后台运行中 · ${kind}`)
       }
-      if (p === 'tool') {
-        return `后台运行中 · 正在调用工具 ${String(data.tool || '')}…`
-      }
-      if (p === 'resume') {
-        return '后台运行中 · 正在自动纠偏续跑…'
-      }
-      return p ? `后台运行中 · ${p}` : '后台运行中…'
     }
 
-    const poll = async () => {
+    const appendPersistedMessage = (msg: ChatMessageOut) => {
+      resetStreamBuffers()
+      setStreamTool(null)
+      setStreamToolSec(null)
+      setDetail((prev) => {
+        if (!prev) return prev
+        if (msg.id && prev.messages.some((x) => x.id === msg.id)) return prev
+        return { ...prev, messages: [...prev.messages, msg] }
+      })
+    }
+
+    const runAttach = async () => {
+      let ended = false
+      try {
+        await api.attachChatStream(
+          activeId,
+          {
+            onPhase: applyPhase,
+            onDelta: (chunk) => {
+              streamBufRef.current.text += chunk
+              scheduleStreamFlush()
+            },
+            onReasoning: (chunk) => {
+              streamBufRef.current.reasoning += chunk
+              scheduleStreamFlush()
+            },
+            onToolOutput: (p) => {
+              const c = p.chunk || p.text || ''
+              if (c) {
+                streamBufRef.current.toolOut = (streamBufRef.current.toolOut + c).slice(-8000)
+                scheduleStreamFlush()
+              }
+            },
+            onToolProgress: (p) => {
+              if (p.tool) setStreamTool(p.tool)
+              if (typeof p.seconds === 'number') setStreamToolSec(p.seconds)
+            },
+            onMessage: appendPersistedMessage,
+            onAwaiting: () => setStreamPhase('等待人工审批工具调用'),
+            onError: (message) => push(message, 'error'),
+            onDone: () => {
+              ended = true
+            },
+          },
+          ctrl.signal,
+        )
+      } catch {
+        // SSE unavailable or closed; fallback sync below handles completion / continuation
+      }
+
+      if (!alive) return
+
+      if (ended) {
+        resetStreamBuffers()
+        setStreamPhase(null)
+        setStreamRound(null)
+        setStreamTool(null)
+        setStreamToolSec(null)
+        await Promise.all([loadDetail(activeId, { silent: true }), loadSessions()])
+        return
+      }
+
+      // Fallback loop: if SSE stream ended without a done frame (e.g. background resumer),
+      // sync DB + instant-wake long-poll until turn completes.
+      let cursor = 0
       while (alive) {
         try {
           const snap = await api.pollChatLive(activeId, cursor)
           if (!alive) break
           cursor = snap.next
-
-          const appended: ChatMessageOut[] = []
-          let gotDone = false
-
           for (const frame of snap.frames) {
             const data = (frame.data || {}) as Record<string, unknown>
             if (frame.event === 'delta' && typeof data.text === 'string') {
-              bufText += data.text
+              streamBufRef.current.text += data.text
+              scheduleStreamFlush()
             } else if (frame.event === 'reasoning' && typeof data.text === 'string') {
-              bufReasoning += data.text
+              streamBufRef.current.reasoning += data.text
+              scheduleStreamFlush()
             } else if (frame.event === 'tool_output') {
-              const chunk =
+              const c =
                 typeof data.chunk === 'string'
                   ? data.chunk
                   : typeof data.text === 'string'
                     ? data.text
                     : ''
-              if (chunk) bufToolOut = (bufToolOut + chunk).slice(-4000)
+              if (c) {
+                streamBufRef.current.toolOut = (streamBufRef.current.toolOut + c).slice(-8000)
+                scheduleStreamFlush()
+              }
             } else if (frame.event === 'tool_progress') {
-              const tool = typeof data.tool === 'string' ? data.tool : '工具'
-              const sec = typeof data.seconds === 'number' ? data.seconds : null
-              curPhase = sec != null ? `后台运行中 · ${tool} 执行中（${sec}s）…` : `后台运行中 · ${tool} 执行中…`
+              if (typeof data.tool === 'string') setStreamTool(data.tool)
+              if (typeof data.seconds === 'number') setStreamToolSec(data.seconds)
             } else if (frame.event === 'phase') {
-              curPhase = formatPhase(data)
-            } else if (frame.event === 'awaiting') {
-              curPhase = '等待人工审批工具调用'
+              applyPhase(data as { phase?: string; round?: number; tool?: string })
             } else if (frame.event === 'message') {
-              bufText = ''
-              bufReasoning = ''
-              bufToolOut = ''
-              appended.push(data as unknown as ChatMessageOut)
+              appendPersistedMessage(data as unknown as ChatMessageOut)
             } else if (frame.event === 'done') {
-              gotDone = true
-            } else if (frame.event === 'error' && typeof data.message === 'string') {
-              push(data.message, 'error')
+              ended = true
             }
           }
 
-          if (appended.length > 0) {
-            setDetail((prev) => {
-              if (!prev) return prev
-              const existing = new Set(prev.messages.map((x) => x.id))
-              const fresh = appended.filter((m) => m.id && !existing.has(m.id))
-              if (fresh.length === 0) return prev
-              return { ...prev, messages: [...prev.messages, ...fresh] }
-            })
-          }
-
-          setStreamText(bufText)
-          setStreamReasoning(bufReasoning)
-          setLiveToolOut(bufToolOut)
-          setStreamPhase(curPhase)
-
-          if (snap.ended || gotDone) {
+          if (snap.ended || ended) {
+            resetStreamBuffers()
             setStreamPhase(null)
-            setStreamText('')
-            setStreamReasoning('')
-            setLiveToolOut('')
             await Promise.all([loadDetail(activeId, { silent: true }), loadSessions()])
             break
           }
 
-          // Fallback sync: if hub returned 0 frames (e.g. background resumer run or long tool),
-          // refresh DB snapshot silently so newly persisted tool/assistant messages still show up.
           if (snap.frames.length === 0) {
             const [freshDetail, freshTurns] = await Promise.all([
               api.getChatSession(activeId, 180).catch(() => null),
@@ -891,12 +1159,9 @@ export function ChatPage() {
             if (freshDetail) setDetail(freshDetail)
             if (freshTurns) {
               setTurns(freshTurns)
-              const stillRunning = freshTurns.some((t) => t.status === 'running')
-              if (!stillRunning) {
+              if (!freshTurns.some((t) => t.status === 'running')) {
+                resetStreamBuffers()
                 setStreamPhase(null)
-                setStreamText('')
-                setStreamReasoning('')
-                setLiveToolOut('')
                 await loadSessions()
                 break
               }
@@ -904,22 +1169,40 @@ export function ChatPage() {
           }
         } catch {
           if (!alive) break
-          await new Promise((r) => window.setTimeout(r, 1500))
+          await new Promise((r) => window.setTimeout(r, 1200))
         }
       }
     }
-    void poll()
+
+    void runAttach()
     return () => {
       alive = false
+      ctrl.abort()
+      resetStreamBuffers()
       setStreamPhase(null)
-      setStreamText('')
-      setStreamReasoning('')
-      setLiveToolOut('')
+      setStreamRound(null)
+      setStreamTool(null)
+      setStreamToolSec(null)
     }
-  }, [activeId, isServerRunning, streaming, loadDetail, loadSessions, push])
+  }, [
+    activeId,
+    isServerRunning,
+    streaming,
+    loadDetail,
+    loadSessions,
+    push,
+    resetStreamBuffers,
+    scheduleStreamFlush,
+  ])
 
   const scrollToBottom = useCallback((smooth = true) => {
-    bottomRef.current?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto' })
+    const el = scrollAreaRef.current
+    if (!el) return
+    if (smooth) {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    } else {
+      el.scrollTop = el.scrollHeight
+    }
   }, [])
 
   useEffect(() => {
@@ -1290,9 +1573,10 @@ export function ChatPage() {
     setShowScrollBottom(false)
     setStreaming(true)
     setStreamPhase('正在连接模型…')
-    setStreamText('')
-    setStreamReasoning('')
-    setLiveToolOut('')
+    setStreamRound(1)
+    setStreamTool(null)
+    setStreamToolSec(null)
+    resetStreamBuffers()
 
     const optimisticUser: ChatMessageOut = {
       id: `local-${Date.now()}`,
@@ -1327,20 +1611,42 @@ export function ChatPage() {
         },
         {
           onPhase: (p) => {
-            if (p.phase === 'thinking') setStreamPhase(`第 ${(p.round || 0) + 1} 轮思考中…`)
-            else if (p.phase === 'tool') setStreamPhase(`正在调用工具 ${p.tool || ''}…`)
-            else if (p.phase === 'resume') setStreamPhase('正在自动纠偏续跑…')
+            if (typeof p.round === 'number') setStreamRound(p.round + 1)
+            if (p.phase === 'thinking') {
+              setStreamTool(null)
+              setStreamToolSec(null)
+              setStreamPhase(`第 ${(p.round || 0) + 1} 轮思考中…`)
+            } else if (p.phase === 'tool') {
+              setStreamTool(p.tool || null)
+              setStreamToolSec(0)
+              setStreamPhase(`正在调用工具 ${p.tool || ''}…`)
+            } else if (p.phase === 'resume') {
+              setStreamPhase('正在自动纠偏续跑…')
+            }
           },
-          onDelta: (chunk) => setStreamText((prev) => prev + chunk),
-          onReasoning: (chunk) => setStreamReasoning((prev) => prev + chunk),
+          onDelta: (chunk) => {
+            streamBufRef.current.text += chunk
+            scheduleStreamFlush()
+          },
+          onReasoning: (chunk) => {
+            streamBufRef.current.reasoning += chunk
+            scheduleStreamFlush()
+          },
           onToolOutput: (p) => {
             const c = p.chunk || p.text || ''
-            if (c) setLiveToolOut((prev) => (prev + c).slice(-4000))
+            if (c) {
+              streamBufRef.current.toolOut = (streamBufRef.current.toolOut + c).slice(-8000)
+              scheduleStreamFlush()
+            }
+          },
+          onToolProgress: (p) => {
+            if (p.tool) setStreamTool(p.tool)
+            if (typeof p.seconds === 'number') setStreamToolSec(p.seconds)
           },
           onMessage: (msg) => {
-            setStreamText('')
-            setStreamReasoning('')
-            setLiveToolOut('')
+            resetStreamBuffers()
+            setStreamTool(null)
+            setStreamToolSec(null)
             setDetail((prev) => {
               if (!prev) return prev
               const withoutLocal =
@@ -1366,10 +1672,62 @@ export function ChatPage() {
     } finally {
       setStreaming(false)
       setStreamPhase(null)
-      setStreamText('')
-      setStreamReasoning('')
-      setLiveToolOut('')
+      setStreamRound(null)
+      setStreamTool(null)
+      setStreamToolSec(null)
+      resetStreamBuffers()
       abortRef.current = null
+    }
+  }
+
+  const slashMatches = useMemo(() => {
+    if (!input.startsWith('/')) return []
+    const q = input.slice(1).trim().toLowerCase()
+    if (q.includes(' ')) return []
+    return SLASH_COMMANDS.filter(
+      (item) =>
+        item.cmd.slice(1).startsWith(q) ||
+        item.label.toLowerCase().includes(q) ||
+        item.hint.toLowerCase().includes(q),
+    )
+  }, [input])
+
+  const handleApplySlash = async (item: SlashCommandItem) => {
+    setInput('')
+    setSlashIndex(0)
+    if (item.action === 'compact') {
+      await handleCompact()
+      return
+    }
+    if (item.action === 'open-sandbox') {
+      setWorkspaceTab('sandbox')
+      setWorkspaceOpen(true)
+      return
+    }
+    if (item.action === 'reset-sandbox') {
+      if (!activeId) {
+        push('请先选择或创建一个会话', 'default')
+        return
+      }
+      try {
+        await api.resetChatSandbox(activeId)
+        push('已重建干净沙箱容器（/work/persist 已保留）', 'success')
+      } catch (err) {
+        push(err instanceof ApiClientError ? err.message : '重建沙箱失败', 'error')
+      }
+      return
+    }
+    if (item.prompt) {
+      setInput(item.prompt)
+      textareaRef.current?.focus()
+    }
+  }
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = e.clipboardData?.files
+    if (files && files.length > 0) {
+      e.preventDefault()
+      void handleUploadFile(files)
     }
   }
 
@@ -1755,31 +2113,17 @@ export function ChatPage() {
 
             {/* Live Streaming / Reattached Turn Card */}
             {(streaming || streamPhase) && (
-              <div className="rounded-2xl border border-accent/35 bg-surface px-5 py-4 shadow-editorial">
-                <div className="mb-3 flex items-center justify-between gap-2 text-xs">
-                  <span className="inline-flex items-center gap-2 font-medium text-accent">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    {streamPhase || '正在处理…'}
-                  </span>
-                  <Button size="sm" variant="danger" onClick={handleStop}>
-                    <Square className="h-3 w-3" />
-                    停止执行
-                  </Button>
-                </div>
-                {streamReasoning && <ReasoningAccordion text={streamReasoning} streaming />}
-                {liveToolOut && (
-                  <div className="mb-3 overflow-hidden rounded-xl border border-line bg-canvas">
-                    <div className="flex items-center gap-1.5 border-b border-line-subtle bg-subtle px-3 py-1 font-mono text-[10px] text-ink-muted">
-                      <Terminal className="h-3 w-3 text-accent" />
-                      实时终端输出
-                    </div>
-                    <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all p-3 font-mono text-[11px] leading-relaxed text-ink-secondary">
-                      {liveToolOut}
-                    </pre>
-                  </div>
-                )}
-                {streamText && <MarkdownView content={streamText} />}
-              </div>
+              <LiveStreamCard
+                phase={streamPhase}
+                round={streamRound}
+                activeTool={streamTool}
+                toolSeconds={streamToolSec}
+                elapsedSec={streamElapsedSec}
+                reasoning={streamReasoning}
+                toolOut={liveToolOut}
+                text={streamText}
+                onStop={handleStop}
+              />
             )}
 
             <div ref={bottomRef} />
@@ -1790,17 +2134,56 @@ export function ChatPage() {
         {showScrollBottom && (
           <button
             type="button"
-            onClick={() => scrollToBottom(true)}
+            onClick={() => {
+              setShowScrollBottom(false)
+              scrollToBottom(true)
+            }}
             className="absolute bottom-32 right-6 z-20 inline-flex items-center gap-1.5 rounded-full border border-line-strong bg-surface/95 px-3 py-1.5 text-xs font-medium text-ink shadow-elevated backdrop-blur transition-colors hover:border-accent hover:text-accent"
           >
             <ArrowDown className="h-3.5 w-3.5" />
-            回到底部
+            {streaming || streamPhase ? '跟随最新输出' : '回到底部'}
           </button>
         )}
 
         {/* Modern Pinned Command Composer */}
         <div className="shrink-0 border-t border-line bg-surface/90 px-4 py-3 backdrop-blur sm:px-6">
-          <div className="mx-auto max-w-4xl">
+          <div className="relative mx-auto max-w-4xl">
+            {/* Slash Command Palette */}
+            {slashMatches.length > 0 && (
+              <div className="absolute bottom-full left-0 right-0 z-30 mb-2 overflow-hidden rounded-xl border border-line-strong bg-surface p-1.5 shadow-dialog">
+                <div className="flex items-center justify-between px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider text-ink-muted">
+                  <span>快捷斜杠指令 · Slash Commands</span>
+                  <span className="font-mono">↑↓ 选择 · Enter 确认</span>
+                </div>
+                <div className="mt-0.5 space-y-0.5">
+                  {slashMatches.map((item, idx) => (
+                    <button
+                      key={item.cmd}
+                      type="button"
+                      onMouseEnter={() => setSlashIndex(idx)}
+                      onClick={() => void handleApplySlash(item)}
+                      className={cn(
+                        'flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-xs transition-colors',
+                        idx === slashIndex
+                          ? 'bg-accent-soft text-accent-ink'
+                          : 'text-ink-secondary hover:bg-wash/70 hover:text-ink',
+                      )}
+                    >
+                      <div className="flex min-w-0 items-center gap-2.5">
+                        <span className="shrink-0 rounded-md border border-accent/25 bg-surface px-1.5 py-0.5 font-mono text-[11px] font-semibold text-accent">
+                          {item.cmd}
+                        </span>
+                        <span className="font-medium text-ink">{item.label}</span>
+                      </div>
+                      <span className="hidden truncate text-[11px] text-ink-muted sm:inline">
+                        {item.hint}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {attachments.length > 0 && (
               <div className="mb-2 flex flex-wrap gap-1.5">
                 {attachments.map((att) => (
@@ -1838,8 +2221,35 @@ export function ChatPage() {
                 ref={textareaRef}
                 rows={2}
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
+                onPaste={handlePaste}
+                onChange={(e) => {
+                  setInput(e.target.value)
+                  setSlashIndex(0)
+                }}
                 onKeyDown={(e) => {
+                  if (slashMatches.length > 0) {
+                    if (e.key === 'ArrowDown') {
+                      e.preventDefault()
+                      setSlashIndex((i) => (i + 1) % slashMatches.length)
+                      return
+                    }
+                    if (e.key === 'ArrowUp') {
+                      e.preventDefault()
+                      setSlashIndex((i) => (i - 1 + slashMatches.length) % slashMatches.length)
+                      return
+                    }
+                    if (e.key === 'Enter' || e.key === 'Tab') {
+                      e.preventDefault()
+                      const chosen = slashMatches[slashIndex] || slashMatches[0]
+                      if (chosen) void handleApplySlash(chosen)
+                      return
+                    }
+                    if (e.key === 'Escape') {
+                      e.preventDefault()
+                      setInput('')
+                      return
+                    }
+                  }
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault()
                     void handleSend()
@@ -1848,7 +2258,7 @@ export function ChatPage() {
                 placeholder={
                   streaming || isServerRunning
                     ? '智能体执行中，可直接输入补充线索或指令（将在下一轮读取）…'
-                    : '输入安全指令、粘贴题目描述、或下达工具/MCP 编排任务…'
+                    : '输入安全指令、粘贴题目/截图，或键入 / 唤起快捷指令…'
                 }
                 className="w-full resize-none bg-transparent px-1.5 py-1 text-sm leading-relaxed text-ink placeholder:text-ink-muted focus:outline-none"
               />
@@ -1953,22 +2363,22 @@ export function ChatPage() {
         )}
       </Drawer>
 
-      {/* Workspace Files & Attack Chain Drawer */}
+      {/* Workspace Files, Sandbox & Attack Chain Drawer */}
       <Drawer
         open={workspaceOpen}
         onClose={() => setWorkspaceOpen(false)}
-        title="会话工作区与攻击链"
-        subtitle="检视沙箱产物文件与本会话自动提取的攻击链路"
+        title="会话工作区、沙箱与攻击链"
+        subtitle="检视 /work/persist 产物文件、直接操控会话沙箱容器与查看攻击链路"
       >
-        <div className="mb-4 flex gap-1.5 border-b border-line pb-3">
+        <div className="mb-4 flex flex-wrap gap-1.5 border-b border-line pb-3">
           <button
             type="button"
             onClick={() => setWorkspaceTab('files')}
             className={cn(
-              'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium',
+              'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors',
               workspaceTab === 'files'
                 ? 'bg-ink text-canvas'
-                : 'border border-line bg-surface text-ink-secondary',
+                : 'border border-line bg-surface text-ink-secondary hover:text-ink',
             )}
           >
             <FolderOpen className="h-3.5 w-3.5" />
@@ -1976,12 +2386,25 @@ export function ChatPage() {
           </button>
           <button
             type="button"
+            onClick={() => setWorkspaceTab('sandbox')}
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors',
+              workspaceTab === 'sandbox'
+                ? 'bg-ink text-canvas'
+                : 'border border-line bg-surface text-ink-secondary hover:text-ink',
+            )}
+          >
+            <Box className="h-3.5 w-3.5" />
+            沙箱终端
+          </button>
+          <button
+            type="button"
             onClick={() => setWorkspaceTab('chain')}
             className={cn(
-              'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium',
+              'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors',
               workspaceTab === 'chain'
                 ? 'bg-ink text-canvas'
-                : 'border border-line bg-surface text-ink-secondary',
+                : 'border border-line bg-surface text-ink-secondary hover:text-ink',
             )}
           >
             <Workflow className="h-3.5 w-3.5" />
@@ -1989,7 +2412,14 @@ export function ChatPage() {
           </button>
         </div>
 
-        {workspaceTab === 'files' ? (
+        {workspaceTab === 'sandbox' && activeId ? (
+          <SandboxPanel
+            sessionId={activeId}
+            onFilesChanged={() => {
+              void api.listSessionFiles(activeId).then(setSessionFiles).catch(() => {})
+            }}
+          />
+        ) : workspaceTab === 'files' ? (
           sessionFiles.length === 0 ? (
             <EmptyState
               icon={<FolderOpen className="h-4 w-4" />}

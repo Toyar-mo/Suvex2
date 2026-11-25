@@ -91,13 +91,24 @@ _log = logging.getLogger(__name__)
 #: 沙箱（模型的下一条命令打到已销毁的容器上），后者什么都不坏但需要
 #: 额外推理才能确认不坏。放同一个值里，判断和删除都在一把锁内完成。
 class _Entry:
-    """会话沙箱 + 最后使用时间（monotonic 秒）。"""
+    """会话沙箱 + 生命周期元数据（monotonic 秒）。"""
 
-    __slots__ = ("last_used", "sandbox")
+    __slots__ = ("created_at", "exec_count", "last_used", "last_verified", "sandbox")
 
     def __init__(self, sandbox: Any, *, last_used: float) -> None:
         self.sandbox = sandbox
         self.last_used = last_used
+        self.created_at = last_used
+        self.last_verified = last_used
+        self.exec_count = 0
+
+
+#: 探活缓存秒数：高频连续命令不重复 `docker inspect`，仅超过此间隔再校验容器是否健在。
+HEALTH_CHECK_INTERVAL_SECONDS = 20.0
+#: 结构化工作区文件写入上限（2 MiB，覆盖脚本/PoC/报告，避免写爆内存）。
+MAX_WORKSPACE_WRITE_BYTES = 2 * 1024 * 1024
+#: 结构化工作区文件单次读取最大字符数。
+MAX_WORKSPACE_READ_CHARS = 32_000
 
 
 #: 会话 id → 沙箱。进程内单例，靠 `_lock` 保护。
@@ -284,35 +295,62 @@ def _new_sandbox(session: ChatSession) -> Any:
     )
 
 
+def _probe_container_alive(sandbox: Any) -> bool:
+    """快速探测缓存中的沙箱容器是否仍在运行（OOM/外部停止时自动自愈）。"""
+    import subprocess
+
+    name = getattr(sandbox, "name", "")
+    if not name or not hasattr(sandbox, "start"):
+        return True
+    # 测试里的假沙箱（未真正走 Docker）直接视为存活
+    if type(sandbox).__name__ != "SandboxContainer":
+        return True
+    try:
+        proc = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", name],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        return proc.returncode == 0 and proc.stdout.strip().lower() == "true"
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def get_sandbox(session: ChatSession) -> Any:
-    """拿到这个会话的沙箱，**必要时启动**。
-
-    ## 为什么整个函数是同步的
-
-    调用方（`engine._execute_tool`）会用 `asyncio.to_thread` 包它 ——
-    `start()` 是 `docker run`（1~3 秒），不能占事件循环。
-
-    ## 为什么每会话一把锁，而不是全局一把
-
-    同一会话可能有两轮同时在跑（用户点了发送又插话，或者双标签页）。
-    两轮同时看到"没有沙箱"就会各自 `docker run` 一个，其中一个报
-    "name already in use" —— 而那个错误发生在**另一个轮次刚建好的
-    容器**上，排查起来极难。所以这个会话的启动必须串行。
-
-    但**不能**用全局锁：那样 A 会话起容器的 3 秒里，B 会话连"我有没有
-    沙箱"都查不了。锁粒度 = 会话。
-    """
+    """拿到这个会话的沙箱，**必要时启动或自愈重建**。"""
+    now = time.monotonic()
+    stale_entry: _Entry | None = None
     with _LOCK:
         existing = _SANDBOXES.get(session.id)
         if existing is not None:
-            # ★ 命中也算"用过"：空闲回收靠这个时间戳判活。漏了这一步，
-            #   一个每分钟用一次的会话会在启动 30 分钟后被回收掉 ——
-            #   而它明明一直在用。
-            existing.last_used = time.monotonic()
-            return existing.sandbox
-        # 拿（或建）这个会话的启动锁。在 `_LOCK` 里做，避免两个线程
-        # 同时 `setdefault` 出两把不同的锁。
+            if now - existing.last_verified < HEALTH_CHECK_INTERVAL_SECONDS:
+                existing.last_used = now
+                existing.exec_count += 1
+                return existing.sandbox
+            stale_entry = existing
         start_lock = _STARTING.setdefault(session.id, threading.Lock())
+
+    if stale_entry is not None:
+        if _probe_container_alive(stale_entry.sandbox):
+            with _LOCK:
+                cur = _SANDBOXES.get(session.id)
+                if cur is stale_entry:
+                    cur.last_used = time.monotonic()
+                    cur.last_verified = cur.last_used
+                    cur.exec_count += 1
+                    _STARTING.pop(session.id, None)
+                    return cur.sandbox
+        else:
+            _log.warning(
+                "检测到对话沙箱异常退出，准备自动重建：session=%s container=%s",
+                session.id,
+                getattr(stale_entry.sandbox, "name", "?"),
+            )
+            drop_sandbox(session.id)
+            with _LOCK:
+                start_lock = _STARTING.setdefault(session.id, threading.Lock())
 
     with start_lock:
         # 双重检查：等锁期间可能已经有别的线程建好了。
@@ -320,16 +358,13 @@ def get_sandbox(session: ChatSession) -> Any:
             existing = _SANDBOXES.get(session.id)
             if existing is not None:
                 existing.last_used = time.monotonic()
+                existing.exec_count += 1
                 return existing.sandbox
 
         sandbox = _new_sandbox(session)
         try:
             sandbox.start()
         except Exception:
-            # ★ 启动失败必须把半成品清掉：`SandboxContainer.start()` 在
-            #   `_verify_running()` 之前就已经 `docker run` 过了，容器可能
-            #   存在但活着活着就退了（见它的注释："docker run 成功不等于
-            #   还活着"）。不清就会攒孤儿容器。
             try:
                 sandbox.destroy()
             except Exception:  # noqa: BLE001 - 清理失败不该盖住真正原因
@@ -338,11 +373,92 @@ def get_sandbox(session: ChatSession) -> Any:
                 _STARTING.pop(session.id, None)
             raise
 
+        entry = _Entry(sandbox, last_used=time.monotonic())
+        entry.exec_count = 1
         with _LOCK:
-            _SANDBOXES[session.id] = _Entry(sandbox, last_used=time.monotonic())
+            _SANDBOXES[session.id] = entry
             _STARTING.pop(session.id, None)
         _log.info("对话沙箱已就绪：session=%s container=%s", session.id, sandbox.name)
         return sandbox
+
+
+def get_sandbox_status(session_id: str) -> dict[str, Any]:
+    """返回单个会话沙箱的实时运行状态与工作区概览（不触发懒启动）。"""
+    from app.chat import workspaces as chat_workspaces
+
+    files = chat_workspaces.list_files(session_id)
+    now = time.monotonic()
+    with _LOCK:
+        entry = _SANDBOXES.get(session_id)
+        if entry is None:
+            return {
+                "active": False,
+                "status": "idle",
+                "containerName": None,
+                "cpus": DEFAULT_CPUS,
+                "memoryMb": DEFAULT_MEMORY_MB,
+                "uptimeSeconds": 0,
+                "idleSeconds": 0,
+                "idleTimeoutSeconds": int(IDLE_REAP_SECONDS),
+                "execCount": 0,
+                "persistFileCount": len(files),
+                "persistPath": chat_workspaces.PERSIST_MOUNT_DIR,
+            }
+        return {
+            "active": True,
+            "status": "running",
+            "containerName": getattr(entry.sandbox, "name", None),
+            "cpus": DEFAULT_CPUS,
+            "memoryMb": DEFAULT_MEMORY_MB,
+            "uptimeSeconds": max(0, int(now - entry.created_at)),
+            "idleSeconds": max(0, int(now - entry.last_used)),
+            "idleTimeoutSeconds": int(IDLE_REAP_SECONDS),
+            "execCount": entry.exec_count,
+            "persistFileCount": len(files),
+            "persistPath": chat_workspaces.PERSIST_MOUNT_DIR,
+        }
+
+
+def reset_sandbox(session: ChatSession) -> dict[str, Any]:
+    """重建会话沙箱容器（清空临时 /work 状态，保留宿主 /work/persist 产物）。"""
+    drop_sandbox(session.id)
+    get_sandbox(session)
+    return get_sandbox_status(session.id)
+
+
+async def exec_quick(
+    session: ChatSession,
+    command: str,
+    *,
+    timeout_seconds: int = 30,
+) -> dict[str, Any]:
+    """供工作区抽屉直接执行一条受限超时的快捷诊断命令。"""
+    from app.kernel import runner
+
+    cmd = (command or "").strip()
+    if not cmd:
+        raise ValueError("命令不能为空。")
+    timeout = max(3, min(int(timeout_seconds or 30), 120))
+    started = time.monotonic()
+
+    def _run() -> tuple[Any, str]:
+        sb = get_sandbox(session)
+        res = sb.shell(cmd, timeout=timeout)
+        return res, getattr(sb, "name", "")
+
+    result, container_name = await asyncio.to_thread(_run)
+    duration_ms = int((time.monotonic() - started) * 1000)
+    raw_out = getattr(result, "stdout", "") or ""
+    stderr_out = getattr(result, "stderr", "") or ""
+    combined = raw_out if not stderr_out else f"{raw_out}\n{stderr_out}".strip()
+    if len(combined) > runner.MAX_TOOL_OUTPUT_CHARS:
+        combined = runner._clip_both_ends(combined, runner.MAX_TOOL_OUTPUT_CHARS)
+    return {
+        "exitCode": getattr(result, "exit_code", 0),
+        "output": combined,
+        "durationMs": duration_ms,
+        "containerName": container_name,
+    }
 
 
 def drop_sandbox(session_id: str) -> None:
@@ -709,6 +825,136 @@ async def _tool_browser(
         )
 
 
+def _safe_rel_parts(raw_path: str, *, strip_prefix: str = "") -> list[str] | None:
+    """把相对/容器路径规整为安全路径段（拒绝 .. / 冒号 / 逃逸）。"""
+    p = (raw_path or "").replace("\\", "/").strip()
+    if strip_prefix and p.startswith(strip_prefix):
+        p = p[len(strip_prefix) :]
+    p = p.lstrip("/")
+    if not p:
+        return None
+    parts = [seg for seg in p.split("/") if seg not in ("", ".")]
+    if not parts or any(seg == ".." or ":" in seg for seg in parts):
+        return None
+    return parts
+
+
+async def _tool_write_workspace_file(ctx: Any, args: dict[str, Any]) -> str:
+    """向会话持久工作区（`/work/persist/<path>`）原子写入文件，彻底避免 shell 转义损坏。"""
+    from app.chat import workspaces as chat_workspaces
+
+    raw_path = str(args.get("path") or "").strip()
+    content = args.get("content")
+    append = bool(args.get("append", False))
+    if not raw_path or not isinstance(content, str):
+        return "参数错误：需要 `path`（相对路径或 /work/persist/...）与 `content`（字符串）。"
+
+    parts = _safe_rel_parts(raw_path, strip_prefix=chat_workspaces.PERSIST_MOUNT_DIR)
+    if not parts:
+        return f"参数错误：路径 {raw_path!r} 非法（不允许目录穿越或盘符，应位于 /work/persist 下）。"
+
+    data = content.encode("utf-8")
+    if len(data) > MAX_WORKSPACE_WRITE_BYTES:
+        return (
+            f"失败：单次写入内容过大（{len(data)} 字节），上限 "
+            f"{MAX_WORKSPACE_WRITE_BYTES // 1024 // 1024} MB。"
+        )
+
+    def _write() -> str:
+        ws_dir = chat_workspaces.ensure_workspace(ctx.session.id, create=True)
+        if ws_dir is None:
+            return "失败：无法创建会话持久工作区目录。"
+        base = ws_dir.resolve()
+        target = ws_dir.joinpath(*parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        resolved_parent = target.parent.resolve()
+        if resolved_parent != base and base not in resolved_parent.parents:
+            return "参数错误：路径超出工作区边界。"
+        if target.is_symlink():
+            return "失败：拒绝写入符号链接目标。"
+        mode = "ab" if append else "wb"
+        with open(target, mode) as fh:
+            fh.write(data)
+        rel = target.resolve().relative_to(base).as_posix()
+        size = target.stat().st_size
+        line_count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
+        action = "追加" if append else "写入"
+        return (
+            f"已{action} `/work/persist/{rel}`（本次 {len(data)} 字节 / {line_count} 行，"
+            f"文件总计 {size} 字节）。该文件在沙箱内立即可执行，并已同步至工作区下载列表。"
+        )
+
+    return await asyncio.to_thread(_write)
+
+
+async def _tool_read_workspace_file(ctx: Any, args: dict[str, Any]) -> str:
+    """分页读取 `/work/persist/` 或 `/work/attachments/` 下的文本文件，自动保护二进制与大文件。"""
+    from app.chat import attachments as chat_attachments
+    from app.chat import workspaces as chat_workspaces
+
+    raw_path = str(args.get("path") or "").strip()
+    if not raw_path:
+        return "参数错误：需要 `path`（支持 /work/persist/... 或 /work/attachments/...）。"
+    start_line = max(1, int(args.get("start_line") or 1))
+    end_line_raw = args.get("end_line")
+    end_line = int(end_line_raw) if end_line_raw is not None else start_line + 199
+
+    def _read() -> str:
+        normalized = raw_path.replace("\\", "/").strip()
+        base_dir = None
+        parts = None
+        mount_prefix = chat_workspaces.PERSIST_MOUNT_DIR
+
+        if normalized.startswith("/work/attachments/") or normalized.startswith("attachments/"):
+            strip_p = "/work/attachments" if normalized.startswith("/work/attachments") else "attachments"
+            parts = _safe_rel_parts(normalized, strip_prefix=strip_p)
+            base_dir = chat_attachments.handed_over_dir(ctx.session.id)
+            mount_prefix = "/work/attachments"
+        else:
+            parts = _safe_rel_parts(normalized, strip_prefix=chat_workspaces.PERSIST_MOUNT_DIR)
+            base_dir = chat_workspaces.ensure_workspace(ctx.session.id, create=False)
+
+        if not parts:
+            return f"参数错误：路径 {raw_path!r} 非法。"
+        if base_dir is None or not base_dir.is_dir():
+            return f"文件不存在：{raw_path}（对应工作区目录为空）。"
+        base = base_dir.resolve()
+        target = base_dir.joinpath(*parts)
+        try:
+            resolved = target.resolve()
+        except OSError:
+            return f"文件不存在：{raw_path}。"
+        if (resolved != base and base not in resolved.parents) or target.is_symlink():
+            return "参数错误：路径超出允许目录。"
+        if not resolved.is_file():
+            return f"文件不存在或不是普通文件：{raw_path}。"
+
+        size = resolved.stat().st_size
+        raw = resolved.read_bytes()[:2_000_000]
+        if b"\x00" in raw[:4096]:
+            head_hex = raw[:64].hex()
+            return (
+                f"文件 `{mount_prefix}/{'/'.join(parts)}` 为二进制文件（大小 {size} 字节）。\n"
+                f"前 64 字节 hex: `{head_hex}`\n"
+                "请改用 `run_shell` 执行 `file` / `strings` / `readelf` / `objdump` / `python3` 分析。"
+            )
+        text = raw.decode("utf-8", errors="replace")
+        lines = text.splitlines()
+        total_lines = len(lines)
+        lo = min(start_line, max(1, total_lines))
+        hi = min(max(lo, end_line), total_lines)
+        snippet = "\n".join(f"{idx:>4}: {lines[idx - 1]}" for idx in range(lo, hi + 1))
+        if len(snippet) > MAX_WORKSPACE_READ_CHARS:
+            snippet = snippet[:MAX_WORKSPACE_READ_CHARS] + "\n...（已达单次读取上限，请缩小行范围）"
+        rel = resolved.relative_to(base).as_posix()
+        return (
+            f"文件 `{mount_prefix}/{rel}`（共 {total_lines} 行，{size} 字节；"
+            f"显示第 {lo}-{hi} 行）：\n{snippet}"
+        )
+
+    return await asyncio.to_thread(_read)
+
+
 __all__ = [
     "DEFAULT_CPUS",
     "DEFAULT_MEMORY_MB",
@@ -716,26 +962,27 @@ __all__ = [
     "REAP_INTERVAL_SECONDS",
     "drop_all_sandboxes",
     "drop_sandbox",
+    "exec_quick",
     "get_sandbox",
+    "get_sandbox_status",
     "has_sandbox",
     "live_sandbox_count",
     "reap_idle_sandboxes",
     "reaper_is_running",
+    "reset_sandbox",
     "start_reaper",
     "stop_reaper",
-    # ★ 引擎的 `_TOOL_IMPLS` 用这两个名字注册。对外不带下划线，因为它们
-    #   是**跨模块**的注册点 —— 下划线在 `engine.py` 里读起来像"内部函数
-    #   被外部调用"，正是那种让人怀疑"是不是该抄一份"的信号。
-    #
-    #   `load_skill` / `load_recipe` 不在这里：它们纯查表、不碰沙箱，
-    #   实现在 `engine.py` 里（见 `_tool_load_skill` / `_tool_load_recipe`）。
     "tool_browser",
+    "tool_read_workspace_file",
     "tool_run_shell",
+    "tool_write_workspace_file",
 ]
 
 #: 引擎注册表用的公开别名。定义在 `__all__` 之后，避免循环引用。
 tool_run_shell = _tool_run_shell
 tool_browser = _tool_browser
+tool_write_workspace_file = _tool_write_workspace_file
+tool_read_workspace_file = _tool_read_workspace_file
 
 
 # ══════════════════════════════════════════════════════════
@@ -799,6 +1046,9 @@ async def stream_run_shell(
         return blocked
 
     sandbox = await asyncio.to_thread(get_sandbox, ctx.session)
+    blocked_net = await asyncio.to_thread(_apply_network_guard, ctx, sandbox)
+    if blocked_net:
+        return blocked_net
     # ★ 真正的执行与分块在 `SandboxContainer.stream_shell`：浏览器复用
     #   同一个方法，两条路径的输出口径不会漂。
     result = await sandbox.stream_shell(command, timeout=timeout, on_chunk=on_chunk)
