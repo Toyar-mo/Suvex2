@@ -1457,7 +1457,33 @@ def render_tool_hint(hinted: list[str] | None) -> str:
     return "\n".join(lines) + "\n"
 
 
-def render_format_reminder(code_block_only: bool = False) -> str:
+def render_waiting_continue_reminder(narration: str, *, native_tools: bool = False) -> str:
+    """模型在任务中途输出「环境正在启动/遇到限流/稍等重试」却没发起工具调用时的纠偏提示（v2.2）。"""
+    quoted = (narration or "").strip().replace("\n", " ")[:140]
+    if native_tools:
+        return "\n".join(
+            [
+                "## ⚠️ 不要只输出等待/进度说明而不调用工具",
+                f"你刚才只回复了：「{quoted}」，没有发起任何工具调用。",
+                "系统**不会**自动替你等待——不发起工具调用会直接结束整轮对话，导致任务中途断开！",
+                "",
+                "请立刻发起工具调用继续推进：",
+                "- 若靶机/环境正在启动或遇到平台限流，立刻调用 `run_shell` 执行短暂等待（例如 `sleep 3`）并紧接着继续轮询状态或重试，不要空等停下；",
+                "- 只有当你真正拿到最终结果，或确认彻底阻塞无法继续时，再直接输出结构化「结果」块结束本轮。",
+            ]
+        )
+    sample = 'ACTION: {"tool": "run_shell", "args": {"command": "sleep 3"}}'
+    return "\n".join(
+        [
+            "## ⚠️ 不要只输出等待/进度说明而不写 `ACTION:`",
+            f"你刚才只回复了：「{quoted}」，没有写 `ACTION:`，系统不会自动替你等待，整轮会直接断开。",
+            f"请立刻用 `ACTION:` 继续执行（例如先短等待再轮询）：\n{sample}",
+            "如果确实已经结束，请以 `FINAL:` 开头给出最终结论。",
+        ]
+    )
+
+
+def render_format_reminder(code_block_only: bool = False, *, native_tools: bool = False) -> str:
     """模型只写了人话、没写动作时，喂回去的一句纠偏（v1.13）。
 
     ## 为什么需要它（这是真实缺陷的修法）
@@ -1482,6 +1508,19 @@ def render_format_reminder(code_block_only: bool = False) -> str:
     见那个函数的 docstring：病因不同，药也不同。用同一句话会让被切断的
     模型试图把断掉的话写完，于是又超一次。
     """
+    if native_tools:
+        lead = (
+            "我看到了你贴的 shell 命令，但**那只是正文文本**——你没有真正发起工具调用，"
+            "所以命令一个都没有执行，请直接通过原生函数调用（tool call）执行它。"
+            if code_block_only
+            else "刚才这一轮只输出了过程/计划叙述，没有发起任何工具调用——系统不会自动执行下一步。"
+        )
+        return (
+            f"{lead}\n\n"
+            "请立刻做出明确选择：\n"
+            "1. **还要继续做事** → 直接发起对应的原生工具调用（如 `run_shell` / MCP 工具），不要只用文字描述打算做什么；\n"
+            "2. **确实已经完成** → 直接给出完整的最终结论与证据（以「结果」块开头）。"
+        )
     sample = 'ACTION: {"tool": "run_shell", "args": {"command": "ls -la /work"}}'
     pasted = (
         "## ⚠️ 你把命令写进了代码块/正文，但它没有被执行\n\n"
@@ -1867,6 +1906,10 @@ _NATIVE_TOOLS_SECTION = """\
 ★ 只有**真的拿到的东西**才算结论，绝不能把"接下来要做什么"当成结论文本写出来
   —— 那会让这一轮提前结束、用户只能再打「继续」。凡是有「先…」「接下来…」
   「然后…」「现在去…」这类话，就去把它做成一次工具调用。
+- ★ **禁止「空口等待」**：绝不要在靶机启动中、遇到限流或需要重试时，只输出一句
+  「环境正在启动，等它就绪后获取访问地址」「遇到限流，延时重试」就不调工具——
+  不调工具会直接断开本轮！遇到启动中/限流必须立刻调用 `run_shell` 执行短等待
+  （如 `sleep 3`）并紧接着继续查询/重试，直到拿到结果或确认彻底阻塞再收尾。
 
 ### 交付结果怎么给（所有"做事"任务）
 

@@ -87,6 +87,7 @@ from app.chat.prompts import (
     render_truncation_reminder,
     render_turn_wall_note,
     render_unfinished_plan_reminder,
+    render_waiting_continue_reminder,
 )
 from app.chat.stream import (
     EVENT_AWAITING,
@@ -4869,9 +4870,13 @@ async def run_turn(
                     render_unfinished_plan_reminder(open_steps)
                     if unfinished_plan
                     else (
-                        render_final_confirm_reminder(text)
-                        if said_final
-                        else render_format_reminder()
+                        render_waiting_continue_reminder(text, native_tools=native_tools)
+                        if nudge_policy.looks_like_waiting(text)
+                        else (
+                            render_final_confirm_reminder(text)
+                            if said_final
+                            else render_format_reminder(native_tools=native_tools)
+                        )
                     )
                 )
                 await _emit_phase(

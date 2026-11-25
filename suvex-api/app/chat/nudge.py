@@ -387,15 +387,11 @@ _PLAN_BARE_VERB = re.compile(
     # ★ v1.34：`我` 不能挡住裸动词。「我看下反汇编。」在 v1.33 里
     #   因为分句边界后先遇到「我」而漏判 → 落成 answer → 整轮结束。
     + r"\s*(?:我)?\s*"
-    r"(?:看|查|试|跑|分析|确认|读|写|扫|执行|找|验证|反汇编|构造|编写|调试|继续|跟进|连接|上传|下载|提交|发送|打)"
+    r"(?:看|查|试|跑|分析|确认|读|写|扫|执行|找|验证|反汇编|构造|编写|调试|继续|跟进|连接|上传|下载|提交|发送|打"
+    r"|获取|拉取|重启|重试|等待|轮询|探测|提取|解密|破解|利用|绕过)"
     # ★ v1.30.1：`通过/入/即/成/好` 也是"已经发生"或状态描述，不是下一步。
-    #   reviewer-7d4f40 实测：`偏移 0x28，验证通过。` 与
-    #   `地址在 0x40070b，写入即覆盖返回地址。` 都被误判成计划 ——
-    #   于是真结论被多问一轮，用户多等一次模型调用。
-    # ★ v1.32：`起` —— 「看起来」是结论式开场（「看起来 flag 在 /flag 里」），
-    #   不是下一步动作；没有它，`看` 会被当成裸动词计划。
-    # ★ 2026-11-13：`扫描完成：…` 是结论，不是下一步。`扫描` 被拆成
-    #   `扫` + `描` 后命中了裸动词计划，导致一份完整汇总被当成计划反复打回。
+    # ★ v1.32：`起` —— 「看起来」是结论式开场。
+    # ★ 2026-11-13：`扫描完成：…` 是结论。
     r"(?!了|到|出|过|完|通过|入|即|成|好|起|描)"
     # ★ v1.34：`我先把 gadget … 确认下来` 是计划；「把」不在动词表里，
     #   分句边界后又被「我」挡住，所以单独认「（我）先把」。
@@ -403,6 +399,34 @@ _PLAN_BARE_VERB = re.compile(
     + _CLAUSE_BREAK
     + r"\s*(?:我)?先把"
 )
+
+#: ★ v2.2：等待/启动中/限流延时等「挂起型进度播报」判据。
+#:
+#: 实测线上会话 `chat_01M8931T560449ZNKMW5G5BSDT` 第 31 轮（已跑 33 个工具）：
+#: 模型在调用 `ctf2_start_challenge_environment` 后只输出一句
+#: 「环境正在启动，等它就绪后获取访问地址。」（19 字、无 tool_call），
+#: 旧规则既未命中 `_PLAN_START` 也未命中 `_PLAN_BARE_VERB` → 整轮直接判 `done`
+#: 中途断开！此类表述明确表示任务还在进行中、模型误以为系统会自动替它等待。
+_WAITING_OR_PROGRESS = re.compile(
+    r"(?:正在|还在|仍在)\s*(?:启动|初始化|运行|加载|等待|重试|构建|拉取|探测|扫描|分析|下载|上传|准备|创建|恢复|回收|处理|执行|安装|编译|部署)"
+    r"|(?:启动|初始化|加载|等待|处理|构建|恢复|回收|排队)中"
+    r"|(?:等待|等它|等其|等\s*\d+\s*秒|等几秒|等一下|稍等|稍候|延时|延迟|待它|待其)"
+    r"|(?:就绪后|启动后|恢复后|回收后|完成后|生效后)\s*(?:再|去|来|获取|查询|检查|访问|测试|看|查|试|继续)"
+    r"|(?:再重试|再尝试|再获取|再查询|再检查|再测试|重新尝试|重新获取)"
+    r"|\b(?:starting|initializing|waiting\s+for|wait\s+for|once\s+(?:it'?s\s+)?ready|"
+    r"retrying|will\s+retry|try\s+again|shortly|in\s+a\s+moment|hold\s+on|stand\s+by|polling)\b",
+    re.IGNORECASE,
+)
+
+
+def looks_like_waiting(text: str) -> bool:
+    """正文是不是「环境启动中 / 限流延时 / 等待就绪后再做」这类挂起播报。"""
+    body = (text or "").strip()
+    if not body or len(body) >= MAX_UNFINISHED_CHARS:
+        return False
+    if _RESULT_MARKERS.search(body) or looks_like_result(body):
+        return False
+    return bool(_WAITING_OR_PROGRESS.search(body))
 
 #: 正文里出现这些，说明有**实际交付物**，不该当计划打回。
 #:
@@ -520,6 +544,8 @@ def _has_trailing_plan(body: str, *, allow_bare_verb: bool = True) -> bool:
             return True
         if _PLAN_START.search(cleaned) and not _clause_is_completed(cleaned):
             return True
+        if _WAITING_OR_PROGRESS.search(cleaned) and not _clause_is_completed(cleaned):
+            return True
         # ★ v1.35：长正文只认带话语标记的计划（见 `TRAILING_PLAN_CLAUSES`）。
         #   裸动词表里「反汇编」「看」这类词在技术性结论里太常见，窗口化之后
         #   误判率反而上升（例如「反汇编里逐条对照栈帧」）。
@@ -582,6 +608,7 @@ def looks_like_plan(text: str) -> bool:
         _PLAN_START.search(body)
         or _PLAN_VERB.search(body)
         or _PLAN_BARE_VERB.search(body)
+        or _WAITING_OR_PROGRESS.search(body)
     )
 
 
