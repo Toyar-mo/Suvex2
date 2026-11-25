@@ -27,11 +27,12 @@ function AuthCanvas({
     <div className="relative flex min-h-screen flex-col justify-between overflow-hidden bg-canvas px-4 py-8 text-ink">
       {/* Live WebGL Mesh Aurora + Cursor-Reactive Dot Matrix Backdrop */}
       <div className="pointer-events-none absolute inset-0 z-0">
-        <MeshAuroraShader palette="indigo" speed={0.85} className="opacity-90" />
-        <div className="absolute inset-0 opacity-75">
+        <MeshAuroraShader palette="indigo" speed={0.85} className="opacity-100 dark:opacity-90" />
+        <div className="absolute inset-0 opacity-80 dark:opacity-75">
           <DotWarpCanvas gap={30} />
         </div>
-        <div className="absolute inset-0 bg-gradient-to-b from-canvas/30 via-transparent to-canvas/75" />
+        <div className="fluted-glass absolute inset-0 opacity-35 dark:opacity-20" />
+        <div className="absolute inset-0 bg-gradient-to-b from-canvas/10 via-transparent to-canvas/55 dark:from-canvas/30 dark:via-transparent dark:to-canvas/75" />
       </div>
 
       <div className="relative z-10 mx-auto flex w-full max-w-5xl items-center justify-between">
@@ -52,7 +53,7 @@ function AuthCanvas({
         <ScrollReveal>
           <SpotlightCard
             intensity="vivid"
-            className="border-line-strong/70 bg-surface/85 p-7 shadow-dialog backdrop-blur-xl"
+            className="border-line-strong/80 bg-surface/92 p-7 shadow-dialog ring-1 ring-inset ring-white/85 backdrop-blur-xl dark:border-line-strong/70 dark:bg-surface/85 dark:ring-white/5"
           >
             <div className="mb-6">
               <div className="mb-4 inline-flex">

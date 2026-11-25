@@ -390,10 +390,11 @@ export function OverviewPage() {
     <div>
       {/* Cinematic Shader Telemetry Hero */}
       <ScrollReveal>
-        <div className="relative mb-6 overflow-hidden rounded-2xl border border-line bg-surface shadow-elevated">
-          <div className="pointer-events-none absolute inset-0 z-0 opacity-75">
+        <div className="relative mb-6 overflow-hidden rounded-2xl border border-line bg-surface shadow-elevated ring-1 ring-inset ring-white/80 dark:ring-white/5">
+          <div className="pointer-events-none absolute inset-0 z-0 opacity-90 dark:opacity-75">
             <MeshAuroraShader palette="indigo" speed={0.75} />
-            <div className="absolute inset-0 bg-gradient-to-r from-surface/92 via-surface/72 to-surface/55" />
+            <div className="fluted-glass absolute inset-0 opacity-30 dark:opacity-20" />
+            <div className="absolute inset-0 bg-gradient-to-r from-surface/78 via-surface/48 to-surface/14 dark:from-surface/92 dark:via-surface/72 dark:to-surface/55" />
           </div>
 
           <div className="relative z-10 flex flex-col gap-5 px-6 py-6 sm:flex-row sm:items-center sm:justify-between">
@@ -661,7 +662,7 @@ export function OverviewPage() {
                         )}
 
                         {isTool ? (
-                          <div className="mt-1.5 rounded-lg border border-line-subtle bg-canvas/80 px-2.5 py-1.5 font-mono text-[11px] leading-relaxed text-ink-secondary">
+                          <div className="mt-1.5 rounded-lg border border-line bg-subtle/85 px-2.5 py-1.5 font-mono text-[11px] leading-relaxed text-ink dark:border-line-subtle dark:bg-canvas/80 dark:text-ink-secondary">
                             <p className="line-clamp-2 break-all">
                               <span className="mr-1.5 select-none text-accent">$</span>
                               {parsed.text}

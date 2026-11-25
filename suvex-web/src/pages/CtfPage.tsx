@@ -438,10 +438,11 @@ export function CtfPage() {
     <div>
       {/* CTF Shader Hero Banner */}
       <ScrollReveal>
-        <div className="relative mb-6 overflow-hidden rounded-2xl border border-line bg-surface px-6 py-5 shadow-elevated">
-          <div className="pointer-events-none absolute inset-0 z-0 opacity-75">
+        <div className="relative mb-6 overflow-hidden rounded-2xl border border-line bg-surface px-6 py-5 shadow-elevated ring-1 ring-inset ring-white/80 dark:ring-white/5">
+          <div className="pointer-events-none absolute inset-0 z-0 opacity-90 dark:opacity-75">
             <MeshAuroraShader palette="ctf" speed={0.75} />
-            <div className="absolute inset-0 bg-gradient-to-r from-surface/92 via-surface/75 to-surface/55" />
+            <div className="fluted-glass absolute inset-0 opacity-30 dark:opacity-20" />
+            <div className="absolute inset-0 bg-gradient-to-r from-surface/78 via-surface/48 to-surface/14 dark:from-surface/92 dark:via-surface/75 dark:to-surface/55" />
           </div>
           <div className="relative z-10 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex items-start gap-4">

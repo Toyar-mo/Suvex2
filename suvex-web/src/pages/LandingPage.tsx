@@ -348,29 +348,29 @@ export function LandingPage() {
       <section className="relative overflow-hidden border-b border-line">
         {/* Live WebGL Shader & Interactive Dot-Ripple Canvas */}
         <div className="pointer-events-none absolute inset-0 z-0">
-          <MeshAuroraShader palette={heroPalette} speed={0.85} className="opacity-95" />
-          <div className="absolute inset-0 opacity-70">
+          <MeshAuroraShader palette={heroPalette} speed={0.85} className="opacity-100" />
+          <div className="absolute inset-0 opacity-80 dark:opacity-70">
             <DotWarpCanvas gap={28} />
           </div>
-          <div className="fluted-glass absolute inset-0 opacity-35" />
-          <div className="absolute inset-0 bg-gradient-to-b from-canvas/35 via-canvas/20 to-canvas" />
+          <div className="fluted-glass absolute inset-0 opacity-45 dark:opacity-35" />
+          <div className="absolute inset-0 bg-gradient-to-b from-canvas/10 via-transparent to-canvas dark:from-canvas/35 dark:via-canvas/20 dark:to-canvas" />
         </div>
 
         <div className="relative z-10 mx-auto max-w-6xl px-6 pb-24 pt-16 sm:pt-24">
           {/* Top Row: Eyebrow + Interactive Shader Mood Switcher */}
           <div className="mb-8 flex flex-wrap items-center justify-between gap-3">
-            <Badge className="border-line-strong/80 bg-surface/80 px-3 py-1 text-xs text-ink-secondary shadow-editorial backdrop-blur">
+            <Badge className="border-line-strong/80 bg-surface/85 px-3 py-1 text-xs text-ink-secondary shadow-editorial backdrop-blur">
               <Sparkles className="h-3 w-3 text-accent" />
               Suvex 第二代 · Editorial Studio × WebGL Shader × 立体图标体系
             </Badge>
 
-            <div className="flex items-center gap-1 rounded-full border border-line bg-surface/75 p-1 text-[11px] backdrop-blur">
+            <div className="flex items-center gap-1 rounded-full border border-line bg-surface/85 p-1 text-[11px] shadow-editorial backdrop-blur">
               <span className="px-2 font-mono text-[10px] text-ink-muted">Shader 光场</span>
               {(
                 [
                   { id: 'indigo', label: '极光靛' },
                   { id: 'ctf', label: '青蓝脉冲' },
-                  { id: 'studio', label: '暖曜石' },
+                  { id: 'studio', label: theme === 'light' ? '晨曦暖玉' : '暖曜石' },
                 ] as const
               ).map((p) => (
                 <button
@@ -448,13 +448,13 @@ export function LandingPage() {
           >
             <SpotlightCard
               intensity="vivid"
-              className="overflow-hidden border-line-strong/80 bg-surface/90 shadow-dialog backdrop-blur-xl"
+              className="overflow-hidden border-line-strong/85 bg-surface/94 shadow-dialog ring-1 ring-inset ring-white/80 backdrop-blur-xl dark:bg-surface/90 dark:ring-white/5"
             >
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-subtle/80 px-5 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-subtle/85 px-5 py-3">
                 <div className="flex items-center gap-2">
-                  <span className="h-2.5 w-2.5 rounded-full bg-red-400/75" />
-                  <span className="h-2.5 w-2.5 rounded-full bg-amber-400/75" />
-                  <span className="h-2.5 w-2.5 rounded-full bg-emerald-400/75" />
+                  <span className="h-2.5 w-2.5 rounded-full bg-red-400/85" />
+                  <span className="h-2.5 w-2.5 rounded-full bg-amber-400/85" />
+                  <span className="h-2.5 w-2.5 rounded-full bg-emerald-400/85" />
                   <span className="ml-2 font-mono text-xs text-ink-muted">
                     suvex2 · autonomous execution ledger
                   </span>
@@ -476,13 +476,13 @@ export function LandingPage() {
                   <p className="mt-2 text-xs leading-relaxed text-ink-secondary">
                     每一次工具调用、推理思考与证据落袋都以流式帧实时推送到前端，支持断点补发与运行中插话纠偏。
                   </p>
-                  <div className="mt-4 space-y-1.5 rounded-xl border border-line bg-canvas/85 p-3 font-mono text-[11px] text-ink-secondary">
+                  <div className="mt-4 space-y-1.5 rounded-xl border border-slate-800/90 bg-[#0f121d] p-3 font-mono text-[11px] text-slate-300 shadow-inner dark:border-line dark:bg-canvas/90">
                     <div className="flex items-center justify-between">
-                      <span className="text-accent">phase:recon</span>
-                      <span className="text-ink-muted">0.4s</span>
+                      <span className="text-indigo-400">phase:recon</span>
+                      <span className="text-slate-500">0.4s</span>
                     </div>
-                    <div className="truncate text-ink">$ httpx -sc -title -td</div>
-                    <div className="flex items-center gap-1.5 text-emerald-700 dark:text-emerald-400">
+                    <div className="truncate text-slate-100">$ httpx -sc -title -td</div>
+                    <div className="flex items-center gap-1.5 text-emerald-400">
                       <CheckCircle2 className="h-3 w-3" />
                       <span>PoC 复现通过 · 已入库</span>
                     </div>
@@ -568,7 +568,7 @@ export function LandingPage() {
       {/* ====================================================================
           SECTION 2: Scrolltide-Style Sticky Scrollytelling Workflow
          ==================================================================== */}
-      <section id="workflow" className="border-b border-line bg-subtle/40 py-24">
+      <section id="workflow" className="border-b border-line bg-subtle/70 py-24 dark:bg-subtle/40">
         <div className="mx-auto max-w-6xl px-6">
           <ScrollReveal>
             <div className="mb-14 max-w-2xl">
@@ -589,16 +589,17 @@ export function LandingPage() {
             <div className="lg:sticky lg:top-24 lg:col-span-6">
               <SpotlightCard
                 intensity="vivid"
-                className="relative overflow-hidden border-line-strong/80 bg-surface shadow-dialog"
+                className="relative overflow-hidden border-line-strong/85 bg-surface shadow-dialog ring-1 ring-inset ring-white/80 dark:ring-white/5"
               >
-                <div className="pointer-events-none absolute inset-0 z-0 opacity-60">
+                <div className="pointer-events-none absolute inset-0 z-0 opacity-85 dark:opacity-65">
                   <MeshAuroraShader palette={currentStage.palette} speed={0.8} />
-                  <div className="absolute inset-0 bg-gradient-to-b from-surface/75 via-surface/90 to-surface" />
+                  <div className="fluted-glass absolute inset-0 opacity-25" />
+                  <div className="absolute inset-0 bg-gradient-to-b from-surface/40 via-surface/82 to-surface dark:from-surface/65 dark:via-surface/88 dark:to-surface" />
                 </div>
 
                 <div className="relative z-10 p-6">
                   {/* Stage Progress Stepper */}
-                  <div className="flex items-center justify-between gap-2 border-b border-line pb-4">
+                  <div className="flex items-center justify-between gap-2 border-b border-line/90 pb-4">
                     <div className="flex items-center gap-3">
                       <TactileAppIcon variant={currentStage.icon} size={44} />
                       <div>
@@ -608,7 +609,7 @@ export function LandingPage() {
                         <h3 className="text-base font-semibold text-ink">{currentStage.title}</h3>
                       </div>
                     </div>
-                    <Badge className="shrink-0 font-mono text-[10px]">
+                    <Badge className="shrink-0 border-accent/25 bg-surface/90 font-mono text-[10px] text-accent-ink shadow-sm dark:border-line dark:bg-subtle dark:text-ink-secondary">
                       {currentStage.step} / 04
                     </Badge>
                   </div>
@@ -626,21 +627,26 @@ export function LandingPage() {
                             ? 'bg-accent'
                             : idx < activeStage
                               ? 'bg-accent/40'
-                              : 'bg-line',
+                              : 'bg-line-strong/70 dark:bg-line',
                         )}
                         aria-label={`切换到步骤 ${st.step}`}
                       />
                     ))}
                   </div>
 
-                  {/* Simulated Live Telemetry Console */}
-                  <div className="mt-5 overflow-hidden rounded-xl border border-line bg-canvas/95 shadow-inner">
-                    <div className="flex items-center justify-between border-b border-line-subtle bg-subtle/80 px-3.5 py-2 font-mono text-[10px] text-ink-muted">
-                      <span className="inline-flex items-center gap-1.5">
-                        <Terminal className="h-3 w-3 text-accent" />
+                  {/* Simulated Live Telemetry Console (High-contrast Studio Terminal in both themes) */}
+                  <div className="mt-5 overflow-hidden rounded-xl border border-slate-800/90 bg-[#0f121d] text-slate-200 shadow-elevated dark:border-line dark:bg-canvas/95">
+                    <div className="flex items-center justify-between border-b border-white/10 bg-white/[0.04] px-3.5 py-2 font-mono text-[10px] text-slate-400">
+                      <span className="inline-flex items-center gap-2">
+                        <span className="flex items-center gap-1">
+                          <span className="h-2 w-2 rounded-full bg-red-400/80" />
+                          <span className="h-2 w-2 rounded-full bg-amber-400/80" />
+                          <span className="h-2 w-2 rounded-full bg-emerald-400/80" />
+                        </span>
+                        <Terminal className="h-3 w-3 text-indigo-400" />
                         sandbox://suvex-runtime/{currentStage.step}
                       </span>
-                      <span className="text-emerald-600 dark:text-emerald-400">
+                      <span className="text-emerald-400">
                         {currentStage.badge}
                       </span>
                     </div>
@@ -649,13 +655,12 @@ export function LandingPage() {
                         <div
                           key={`${currentStage.step}-${i}`}
                           className={cn(
-                            'break-all rounded-md px-2 py-1 transition-all',
-                            line.tone === 'cmd' && 'bg-subtle/70 text-ink',
-                            line.tone === 'info' && 'text-ink-secondary',
-                            line.tone === 'ok' &&
-                              'text-emerald-700 dark:text-emerald-400',
+                            'break-all rounded-md px-2.5 py-1.5 transition-all',
+                            line.tone === 'cmd' && 'bg-white/[0.06] text-slate-100',
+                            line.tone === 'info' && 'text-slate-300',
+                            line.tone === 'ok' && 'text-emerald-400',
                             line.tone === 'flag' &&
-                              'border border-emerald-400/50 bg-emerald-500/10 font-semibold text-emerald-700 dark:text-emerald-300',
+                              'border border-emerald-400/45 bg-emerald-500/15 font-semibold text-emerald-300',
                           )}
                         >
                           {line.text}
@@ -669,7 +674,7 @@ export function LandingPage() {
                     {currentStage.metrics.map((m) => (
                       <div
                         key={m.label}
-                        className="rounded-xl border border-line-subtle bg-subtle/60 px-3.5 py-2.5"
+                        className="rounded-xl border border-line bg-subtle/75 px-3.5 py-2.5 dark:border-line-subtle dark:bg-subtle/60"
                       >
                         <div className="text-[10px] text-ink-muted">{m.label}</div>
                         <div className="mt-0.5 font-mono text-xs font-semibold text-ink">
@@ -683,7 +688,7 @@ export function LandingPage() {
             </div>
 
             {/* Right Column: Scrollable Narrative Chapters */}
-            <div className="space-y-6 lg:col-span-6">
+            <div className="space-y-5 lg:col-span-6">
               {STORY_STAGES.map((stage, idx) => {
                 const isActive = idx === activeStage
                 return (
@@ -697,8 +702,8 @@ export function LandingPage() {
                     className={cn(
                       'cursor-pointer rounded-2xl border p-6 transition-all duration-300',
                       isActive
-                        ? 'border-accent/70 bg-surface shadow-elevated ring-1 ring-accent/20'
-                        : 'border-line bg-surface/55 opacity-75 hover:border-line-strong hover:opacity-100',
+                        ? 'border-accent/65 bg-surface shadow-elevated ring-2 ring-accent/15 dark:border-accent/70 dark:ring-1 dark:ring-accent/25'
+                        : 'border-line bg-surface/90 shadow-editorial hover:border-accent/40 hover:bg-surface dark:bg-surface/55 dark:opacity-75 dark:hover:border-line-strong dark:hover:opacity-100',
                     )}
                   >
                     <div className="flex items-center justify-between gap-2">
@@ -746,7 +751,7 @@ export function LandingPage() {
 
           {/* Interactive Icon Dock */}
           <ScrollReveal delayMs={80}>
-            <div className="mx-auto mt-10 flex max-w-3xl flex-wrap items-center justify-center gap-3 rounded-2xl border border-line bg-surface/85 p-4 shadow-elevated backdrop-blur">
+            <div className="mx-auto mt-10 flex max-w-3xl flex-wrap items-center justify-center gap-3 rounded-2xl border border-line bg-surface/95 p-4 shadow-elevated ring-1 ring-inset ring-white/80 backdrop-blur dark:bg-surface/85 dark:ring-white/5">
               {MODULE_DOCK.map((mod) => {
                 const selected = mod.id === activeModule
                 return (
@@ -758,8 +763,8 @@ export function LandingPage() {
                     className={cn(
                       'group flex flex-col items-center gap-2 rounded-xl px-3.5 py-3 transition-all duration-200',
                       selected
-                        ? 'bg-subtle ring-1 ring-accent/40 shadow-editorial -translate-y-1'
-                        : 'hover:-translate-y-1 hover:bg-subtle/60',
+                        ? '-translate-y-1 bg-accent-soft/75 shadow-editorial ring-1 ring-accent/40 dark:bg-subtle'
+                        : 'hover:-translate-y-1 hover:bg-subtle/75',
                     )}
                   >
                     <TactileAppIcon
@@ -878,10 +883,11 @@ export function LandingPage() {
 
         {/* Closing Shader CTA Banner */}
         <ScrollReveal delayMs={100}>
-          <div className="relative mt-16 overflow-hidden rounded-2xl border border-line-strong/80 bg-surface p-8 shadow-dialog sm:p-10">
-            <div className="pointer-events-none absolute inset-0 z-0 opacity-85">
+          <div className="relative mt-16 overflow-hidden rounded-2xl border border-line-strong/85 bg-surface p-8 shadow-dialog ring-1 ring-inset ring-white/80 dark:ring-white/5 sm:p-10">
+            <div className="pointer-events-none absolute inset-0 z-0 opacity-95 dark:opacity-85">
               <MeshAuroraShader palette="ctf" speed={0.7} />
-              <div className="absolute inset-0 bg-gradient-to-r from-surface/90 via-surface/75 to-surface/60" />
+              <div className="fluted-glass absolute inset-0 opacity-30" />
+              <div className="absolute inset-0 bg-gradient-to-r from-surface/72 via-surface/46 to-surface/14 dark:from-surface/90 dark:via-surface/75 dark:to-surface/60" />
             </div>
             <div className="relative z-10 flex flex-col items-start justify-between gap-6 sm:flex-row sm:items-center">
               <div className="flex items-center gap-4">

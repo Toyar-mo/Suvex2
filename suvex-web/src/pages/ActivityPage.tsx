@@ -690,9 +690,9 @@ export function ActivityPage() {
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-canvas">
       {/* Top Telemetry Bar (with ambient WebGL shader ribbon + soft-3D icon) */}
       <div className="relative shrink-0 overflow-hidden border-b border-line bg-surface/95 px-5 py-3 backdrop-blur">
-        <div className="pointer-events-none absolute inset-0 z-0 opacity-45">
+        <div className="pointer-events-none absolute inset-0 z-0 opacity-80 dark:opacity-45">
           <MeshAuroraShader palette="ctf" speed={0.65} />
-          <div className="absolute inset-0 bg-gradient-to-r from-surface/92 via-surface/82 to-surface/90" />
+          <div className="absolute inset-0 bg-gradient-to-r from-surface/74 via-surface/55 to-surface/68 dark:from-surface/92 dark:via-surface/82 dark:to-surface/90" />
         </div>
         <div className="relative z-10 flex flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 flex-wrap items-center gap-2.5">

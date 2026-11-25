@@ -1435,9 +1435,9 @@ export function ChatPage() {
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         {/* Session Header Bar (with subtle ambient WebGL shader ribbon) */}
         <div className="relative shrink-0 overflow-hidden border-b border-line bg-surface/95 px-4 py-2.5 backdrop-blur">
-          <div className="pointer-events-none absolute inset-0 z-0 opacity-35">
+          <div className="pointer-events-none absolute inset-0 z-0 opacity-75 dark:opacity-35">
             <MeshAuroraShader palette={detail?.challenge ? 'ctf' : 'indigo'} speed={0.55} />
-            <div className="absolute inset-0 bg-gradient-to-r from-surface/92 via-surface/85 to-surface/90" />
+            <div className="absolute inset-0 bg-gradient-to-r from-surface/74 via-surface/58 to-surface/72 dark:from-surface/92 dark:via-surface/85 dark:to-surface/90" />
           </div>
           <div className="relative z-10 flex flex-wrap items-center justify-between gap-2.5">
           <div className="flex min-w-0 flex-1 items-center gap-2.5">

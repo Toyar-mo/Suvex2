@@ -83,7 +83,7 @@ export function Card({
       onPointerMove={onPointerMove}
       data-spot-intensity="subtle"
       className={cn(
-        'spotlight-card rounded-editorial border border-line bg-surface shadow-editorial transition-colors duration-200 hover:border-line-strong/80',
+        'spotlight-card rounded-editorial border border-line bg-surface shadow-editorial transition-colors duration-200 hover:border-accent/30 dark:hover:border-line-strong/80',
         className,
       )}
     >
@@ -402,12 +402,12 @@ export function PageHeader({
 
   return (
     <ScrollReveal>
-      <header className="relative mb-7 overflow-hidden rounded-2xl border border-line bg-surface px-6 py-5 shadow-elevated">
+      <header className="relative mb-7 overflow-hidden rounded-2xl border border-line bg-surface px-6 py-5 shadow-elevated ring-1 ring-inset ring-white/80 dark:ring-white/5">
         {/* Ambient WebGL Mesh Aurora + Fluted Glass Backdrop */}
-        <div className="pointer-events-none absolute inset-0 z-0 opacity-70">
+        <div className="pointer-events-none absolute inset-0 z-0 opacity-90 dark:opacity-75">
           <MeshAuroraShader palette={modTheme.shader} speed={0.7} />
-          <div className="fluted-glass absolute inset-0 opacity-25" />
-          <div className="absolute inset-0 bg-gradient-to-r from-surface/94 via-surface/78 to-surface/58" />
+          <div className="fluted-glass absolute inset-0 opacity-35 dark:opacity-25" />
+          <div className="absolute inset-0 bg-gradient-to-r from-surface/78 via-surface/48 to-surface/12 dark:from-surface/92 dark:via-surface/76 dark:to-surface/55" />
         </div>
 
         <div className="relative z-10 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -453,8 +453,8 @@ export function EmptyState({
   action?: ReactNode
 }) {
   return (
-    <div className="relative flex flex-col items-center justify-center overflow-hidden rounded-2xl border border-dashed border-line-strong/80 bg-surface/60 px-6 py-14 text-center">
-      <div className="pointer-events-none absolute inset-0 z-0 opacity-55">
+    <div className="relative flex flex-col items-center justify-center overflow-hidden rounded-2xl border border-dashed border-line-strong/85 bg-surface/85 px-6 py-14 text-center dark:bg-surface/60">
+      <div className="pointer-events-none absolute inset-0 z-0 opacity-75 dark:opacity-55">
         <DotWarpCanvas gap={26} />
       </div>
       <div className="relative z-10 flex flex-col items-center">

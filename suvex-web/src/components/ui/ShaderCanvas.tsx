@@ -104,24 +104,27 @@ const DARK_PALETTES: Record<ShaderPalette, [number[], number[], number[], number
 
 const LIGHT_PALETTES: Record<ShaderPalette, [number[], number[], number[], number[]]> = {
   indigo: [
-    [0.980, 0.976, 0.968], // warm porcelain
-    [0.935, 0.945, 0.992], // soft indigo mist
-    [0.958, 0.935, 0.988], // delicate lavender
-    [0.925, 0.968, 0.982], // airy sky
+    [0.945, 0.960, 0.996], // luminous cool porcelain
+    [0.755, 0.805, 0.995], // periwinkle indigo silk
+    [0.845, 0.750, 0.995], // orchid violet bloom
+    [0.645, 0.895, 0.985], // glacial sky cyan
   ],
   ctf: [
-    [0.980, 0.976, 0.968],
-    [0.925, 0.968, 0.960],
-    [0.932, 0.942, 0.992],
-    [0.918, 0.976, 0.952],
+    [0.935, 0.972, 0.985], // crisp ice-mint base
+    [0.655, 0.875, 0.978], // cerulean azure wave
+    [0.775, 0.800, 0.992], // electric periwinkle
+    [0.625, 0.935, 0.835], // luminous mint emerald
   ],
   studio: [
-    [0.982, 0.978, 0.970],
-    [0.952, 0.944, 0.928],
-    [0.938, 0.946, 0.990],
-    [0.972, 0.948, 0.932],
+    [0.978, 0.962, 0.948], // warm gallery porcelain
+    [0.978, 0.845, 0.765], // sunlit apricot peach
+    [0.815, 0.785, 0.992], // soft iris lavender
+    [0.982, 0.795, 0.865], // rose quartz mist
   ],
 }
+
+const IS_JSDOM =
+  typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent)
 
 export function MeshAuroraShader({
   palette = 'indigo',
@@ -137,7 +140,7 @@ export function MeshAuroraShader({
 
   useEffect(() => {
     const canvas = canvasRef.current
-    if (!canvas) return
+    if (!canvas || IS_JSDOM) return
 
     let gl: WebGLRenderingContext | null = null
     try {
@@ -266,8 +269,8 @@ export function MeshAuroraShader({
       className={cn(
         'pointer-events-none h-full w-full block',
         theme === 'dark'
-          ? 'bg-[radial-gradient(circle_at_25%_20%,rgba(99,102,241,0.22),transparent_55%),radial-gradient(circle_at_80%_75%,rgba(56,189,248,0.14),transparent_50%)]'
-          : 'bg-[radial-gradient(circle_at_25%_20%,rgba(99,102,241,0.10),transparent_55%),radial-gradient(circle_at_80%_75%,rgba(139,92,246,0.08),transparent_50%)]',
+          ? 'bg-[radial-gradient(circle_at_25%_20%,rgba(99,102,241,0.24),transparent_55%),radial-gradient(circle_at_80%_75%,rgba(56,189,248,0.16),transparent_50%)]'
+          : 'bg-[radial-gradient(circle_at_22%_18%,rgba(129,140,248,0.32),transparent_54%),radial-gradient(circle_at_78%_72%,rgba(56,189,248,0.28),transparent_52%),radial-gradient(circle_at_55%_45%,rgba(192,132,252,0.22),transparent_55%)]',
         className,
       )}
     />
@@ -290,7 +293,7 @@ export function DotWarpCanvas({
 
   useEffect(() => {
     const canvas = canvasRef.current
-    if (!canvas) return
+    if (!canvas || IS_JSDOM) return
     let ctx: CanvasRenderingContext2D | null = null
     try {
       ctx = canvas.getContext('2d')
@@ -334,7 +337,7 @@ export function DotWarpCanvas({
     const draw = (now: number) => {
       if (!document.hidden && width > 0 && height > 0) {
         ctx!.clearRect(0, 0, width, height)
-        const baseColor = theme === 'dark' ? '148, 163, 184' : '100, 116, 139'
+        const baseColor = theme === 'dark' ? '148, 163, 184' : '71, 85, 105'
         const accentColor = theme === 'dark' ? '129, 140, 248' : '79, 70, 229'
         const t = now * 0.0014
         const radius = 150
@@ -357,13 +360,14 @@ export function DotWarpCanvas({
                 boost = f * (0.55 + 0.45 * wave)
               }
             }
-            const r = 1.05 + boost * 1.45
+            const r = (theme === 'dark' ? 1.05 : 1.15) + boost * 1.5
             ctx!.beginPath()
             ctx!.arc(x + dx, y + dy, r, 0, Math.PI * 2)
             if (boost > 0.08) {
-              ctx!.fillStyle = `rgba(${accentColor}, ${(0.22 + boost * 0.52).toFixed(3)})`
+              const peak = theme === 'dark' ? 0.52 : 0.62
+              ctx!.fillStyle = `rgba(${accentColor}, ${(0.24 + boost * peak).toFixed(3)})`
             } else {
-              ctx!.fillStyle = `rgba(${baseColor}, ${theme === 'dark' ? '0.14' : '0.16'})`
+              ctx!.fillStyle = `rgba(${baseColor}, ${theme === 'dark' ? '0.14' : '0.22'})`
             }
             ctx!.fill()
           }
@@ -425,7 +429,7 @@ export function SpotlightCard({
       onPointerMove={handleMove}
       data-spot-intensity={intensity}
       className={cn(
-        'spotlight-card rounded-editorial border border-line bg-surface shadow-editorial transition-colors duration-200 hover:border-line-strong',
+        'spotlight-card rounded-editorial border border-line bg-surface shadow-editorial transition-colors duration-200 hover:border-accent/35 dark:hover:border-line-strong',
         className,
       )}
       {...rest}

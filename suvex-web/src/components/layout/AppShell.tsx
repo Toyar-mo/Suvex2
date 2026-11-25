@@ -150,8 +150,8 @@ export function AppShell({ children }: { children?: ReactNode }) {
                           'group relative flex items-center gap-2.5 rounded-lg text-[13px] font-medium transition-all duration-150',
                           isCompact ? 'justify-center p-2' : 'px-2.5 py-1.5',
                           active
-                            ? 'bg-surface text-ink shadow-editorial ring-1 ring-line'
-                            : 'text-ink-secondary hover:translate-x-[1px] hover:bg-wash/70 hover:text-ink',
+                            ? 'bg-surface text-ink shadow-editorial ring-1 ring-accent/25 dark:ring-line'
+                            : 'text-ink-secondary hover:translate-x-[1px] hover:bg-wash/75 hover:text-ink',
                         )}
                       >
                         {active && !isCompact && (
