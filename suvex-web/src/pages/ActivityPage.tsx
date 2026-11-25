@@ -482,6 +482,8 @@ export function ActivityPage() {
 
   const streamScrollRef = useRef<HTMLDivElement | null>(null)
   const endRef = useRef<HTMLDivElement | null>(null)
+  const isProgrammaticScrollRef = useRef(false)
+  const initialScrolledScanRef = useRef<string>('')
 
   useEffect(() => {
     api
@@ -558,19 +560,40 @@ export function ActivityPage() {
     }
   }, [selectedScanId])
 
+  const scrollToLatest = useCallback((smooth: boolean) => {
+    const el = streamScrollRef.current
+    if (!el) return
+    isProgrammaticScrollRef.current = true
+    el.scrollTo({
+      top: el.scrollHeight,
+      behavior: smooth ? 'smooth' : 'auto',
+    })
+    window.setTimeout(
+      () => {
+        isProgrammaticScrollRef.current = false
+      },
+      smooth ? 450 : 60,
+    )
+  }, [])
+
   useEffect(() => {
-    if (autoScroll && viewMode === 'stream') {
-      endRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (!autoScroll || viewMode !== 'stream' || events.length === 0) return
+    const isInitialForScan = initialScrolledScanRef.current !== selectedScanId
+    if (isInitialForScan) {
+      initialScrolledScanRef.current = selectedScanId
+      scrollToLatest(false)
+    } else {
+      scrollToLatest(true)
     }
-  }, [events.length, autoScroll, viewMode])
+  }, [events.length, autoScroll, viewMode, selectedScanId, scrollToLatest])
 
   const handleStreamScroll = () => {
     const el = streamScrollRef.current
     if (!el) return
     const dist = el.scrollHeight - el.scrollTop - el.clientHeight
-    const farFromBottom = dist > 200
+    const farFromBottom = dist > 160
     setShowJumpLatest(farFromBottom)
-    if (farFromBottom && autoScroll) {
+    if (!isProgrammaticScrollRef.current && farFromBottom && autoScroll) {
       setAutoScroll(false)
     }
   }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Activity,
@@ -42,7 +42,11 @@ export interface ChallengeCockpitProps {
   onRefreshSession: () => Promise<void>
 }
 
-function eventTypeStyle(type: string): { label: string; cls: string; icon: 'tool' | 'think' | 'flag' | 'info' } {
+function eventTypeStyle(type: string): {
+  label: string
+  cls: string
+  icon: 'tool' | 'think' | 'flag' | 'info'
+} {
   const t = type.toLowerCase()
   if (t.includes('tool') || t.includes('cmd') || t.includes('shell')) {
     return {
@@ -58,39 +62,56 @@ function eventTypeStyle(type: string): { label: string; cls: string; icon: 'tool
       icon: 'think',
     }
   }
-  if (t.includes('flag') || t.includes('submit') || t.includes('solved')) {
+  if (t.includes('flag') || t.includes('submit') || t.includes('solved') || t === 'verified' || t === 'poc_generated') {
     return {
-      label: 'Flag 进展',
+      label: t === 'verified' ? '已确证' : 'Flag 进展',
       cls: 'border-emerald-300/60 bg-emerald-50/70 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300',
       icon: 'flag',
     }
   }
-  if (t.includes('error') || t.includes('fail') || t.includes('abandon')) {
+  if (t.includes('error') || t.includes('fail') || t.includes('abandon') || t === 'blocked') {
     return {
-      label: '异常',
-      cls: 'border-red-300/60 bg-red-50/70 text-red-700 dark:border-red-800 dark:bg-red-950/60 dark:text-red-300',
+      label: t === 'blocked' ? '受阻重试' : '异常',
+      cls: 'border-red-300/60 bg-red-50/70 text-red-700 dark:border-red-900 dark:bg-red-950/60 dark:text-red-300',
       icon: 'info',
     }
   }
   return {
-    label: type || '状态',
+    label: t === 'discovery' ? '新发现' : type || '状态',
     cls: 'border-line bg-subtle text-ink-secondary',
     icon: 'info',
   }
 }
 
+function cleanEventSummary(ev: ActivityEventOut): string {
+  let raw = (ev.summary || ev.type || '').trim()
+  raw = raw.replace(/[\s…]*[（(]已截断[，,]?\s*原长\s*\d+\s*字符[）)]\s*$/, '').trim()
+  const tool = typeof ev.detail?.tool === 'string' ? ev.detail.tool.trim() : ''
+  if (ev.type === 'tool_call' && tool && raw.startsWith(tool + ' ')) {
+    return `$ ${raw.slice(tool.length + 1).trim()}`
+  }
+  if (ev.type === 'reasoning' && /^ACTION:\s*\{/i.test(raw)) {
+    return '准备调用工具执行下一步动作…'
+  }
+  return raw
+}
+
 function SolveEventRow({ ev }: { ev: ActivityEventOut }) {
   const [open, setOpen] = useState(false)
   const meta = eventTypeStyle(ev.type)
-  const hasDetail = ev.detail && Object.keys(ev.detail).length > 0
+  const detail = ev.detail || {}
+  const hasDetail = Object.keys(detail).length > 0
+  const command = typeof detail.command === 'string' ? detail.command : ''
+  const output = typeof detail.output === 'string' ? detail.output : ''
+  const reasoningText = typeof detail.text === 'string' ? detail.text : ''
 
   return (
-    <div className="rounded-lg border border-line-subtle bg-surface/80 text-xs transition-colors hover:border-line">
+    <div className="rounded-lg border border-line-subtle bg-surface/85 text-xs transition-colors hover:border-line">
       <button
         type="button"
         onClick={() => hasDetail && setOpen((v) => !v)}
         className={cn(
-          'flex w-full items-center gap-2 px-3 py-2 text-left',
+          'flex w-full items-center gap-2 px-3 py-1.5 text-left',
           !hasDetail && 'cursor-default',
         )}
       >
@@ -116,8 +137,8 @@ function SolveEventRow({ ev }: { ev: ActivityEventOut }) {
 
         <Badge className={cn('shrink-0 text-[10px]', meta.cls)}>{meta.label}</Badge>
 
-        <span className="min-w-0 flex-1 truncate text-ink">
-          {ev.summary || ev.type}
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink">
+          {cleanEventSummary(ev)}
         </span>
 
         <span className="shrink-0 font-mono text-[10px] text-ink-muted">
@@ -126,10 +147,27 @@ function SolveEventRow({ ev }: { ev: ActivityEventOut }) {
       </button>
 
       {open && hasDetail && (
-        <div className="border-t border-line-subtle bg-subtle/60 px-3 py-2.5">
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-line bg-canvas p-2.5 font-mono text-[11px] leading-relaxed text-ink-secondary">
-            {JSON.stringify(ev.detail, null, 2)}
-          </pre>
+        <div className="space-y-2 border-t border-line-subtle bg-subtle/60 px-3 py-2.5">
+          {command && (
+            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-line bg-canvas p-2 font-mono text-[11px] text-ink">
+              {command}
+            </pre>
+          )}
+          {output && (
+            <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-line bg-canvas p-2 font-mono text-[11px] text-ink-secondary">
+              {output}
+            </pre>
+          )}
+          {!command && !output && reasoningText && (
+            <div className="max-h-56 overflow-y-auto whitespace-pre-wrap break-words rounded-lg border border-line bg-canvas p-2.5 font-mono text-[11px] leading-relaxed text-ink-secondary">
+              {reasoningText}
+            </div>
+          )}
+          {!command && !output && !reasoningText && (
+            <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-line bg-canvas p-2 font-mono text-[11px] text-ink-secondary">
+              {JSON.stringify(detail, null, 2)}
+            </pre>
+          )}
         </div>
       )}
     </div>
@@ -147,13 +185,19 @@ export function ChallengeCockpit({
   const [events, setEvents] = useState<ActivityEventOut[]>([])
   const [loadingEvents, setLoadingEvents] = useState(false)
   const [streamConnected, setStreamConnected] = useState(false)
-  const [descOpen, setDescOpen] = useState(true)
-  const [traceOpen, setTraceOpen] = useState(true)
+  const [panelOpen, setPanelOpen] = useState(!hasChatMessages)
+  const [activeTab, setActiveTab] = useState<'trace' | 'brief'>('trace')
   const [busyAction, setBusyAction] = useState(false)
   const [flagDraft, setFlagDraft] = useState(challengeRef.candidateFlag || '')
   const [submittingFlag, setSubmittingFlag] = useState(false)
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null)
   const [writeup, setWriteup] = useState<KernelWriteupOut | null>(null)
+  const traceEndRef = useRef<HTMLDivElement | null>(null)
+
+  // Auto-open when switching to an empty challenge session; stay compact when viewing long chat history
+  useEffect(() => {
+    setPanelOpen(!hasChatMessages)
+  }, [challengeRef.id, hasChatMessages])
 
   const loadChallenge = useCallback(async () => {
     try {
@@ -174,7 +218,6 @@ export function ChallengeCockpit({
     effectiveStatus === 'environment_ready' ||
     effectiveStatus === 'submitting'
 
-  // Load full challenge detail and poll while solving
   useEffect(() => {
     void loadChallenge()
     if (!isSolving) return
@@ -182,7 +225,7 @@ export function ChallengeCockpit({
     return () => window.clearInterval(timer)
   }, [loadChallenge, isSolving])
 
-  // Load recent events + subscribe SSE stream for effectiveScanId
+  // Load recent events + subscribe SSE stream using named `activity` & `resync` events
   useEffect(() => {
     if (!effectiveScanId) {
       setEvents([])
@@ -190,51 +233,77 @@ export function ChallengeCockpit({
       return
     }
     let alive = true
-    setLoadingEvents(true)
-    api
-      .getRecentEvents(effectiveScanId, 200)
-      .then((res) => {
+    let es: EventSource | null = null
+
+    const connect = async () => {
+      setLoadingEvents(true)
+      let lastId: string | null = null
+      try {
+        const res = await api.getRecentEvents(effectiveScanId, 200)
         if (!alive) return
         setEvents(res.events || [])
-      })
-      .catch(() => {})
-      .finally(() => {
+        lastId = res.events?.at(-1)?.id || null
+      } catch {
+        if (!alive) return
+        setEvents([])
+      } finally {
         if (alive) setLoadingEvents(false)
+      }
+
+      if (!alive) return
+      es = api.createActivityStream(effectiveScanId, lastId)
+      es.onopen = () => {
+        if (alive) setStreamConnected(true)
+      }
+      es.onerror = () => {
+        if (alive) setStreamConnected(false)
+      }
+      es.addEventListener('activity', (rawEv) => {
+        const parsed = api.parseActivityEvent((rawEv as MessageEvent).data)
+        if (!parsed || !alive) return
+        setEvents((prev) =>
+          prev.some((e) => e.id === parsed.id) ? prev : [...prev.slice(-299), parsed],
+        )
       })
-
-    const es = api.createActivityStream(effectiveScanId)
-    es.onopen = () => {
-      if (alive) setStreamConnected(true)
-    }
-    es.onerror = () => {
-      if (alive) setStreamConnected(false)
-    }
-    es.onmessage = (msg) => {
-      const parsed = api.parseActivityEvent(msg.data)
-      if (!parsed || !alive) return
-      setEvents((prev) => (prev.some((e) => e.id === parsed.id) ? prev : [...prev, parsed]))
+      es.addEventListener('resync', () => {
+        if (!alive) return
+        void api.getRecentEvents(effectiveScanId, 200).then((r) => {
+          if (alive) setEvents(r.events || [])
+        })
+      })
     }
 
+    void connect()
     return () => {
       alive = false
-      es.close()
+      es?.close()
     }
   }, [effectiveScanId])
 
+  useEffect(() => {
+    if (panelOpen && activeTab === 'trace') {
+      traceEndRef.current?.scrollIntoView({ behavior: 'auto' })
+    }
+  }, [events.length, panelOpen, activeTab])
+
   const statusMeta = CTF_STATUS_META[effectiveStatus] || CTF_STATUS_META.unsolved
-  const targetUrls = useMemo(() => {
+  const readyTargetUrls = useMemo(() => {
     const env = challenge?.environment
-    if (!env) return []
+    if (!env || env.status !== 'ready') return []
     const list = [...(env.accessUrls || [])]
     if (env.accessUrl && !list.includes(env.accessUrl)) list.unshift(env.accessUrl)
     return list
   }, [challenge?.environment])
+
+  const latestEvent = events.at(-1) || null
 
   const handleStartSolve = async () => {
     setBusyAction(true)
     try {
       const res = await api.solveChallenge(challengeRef.id)
       push(res.message || '已投入自动解题队列', 'success')
+      setPanelOpen(true)
+      setActiveTab('trace')
       await Promise.all([loadChallenge(), onRefreshSession()])
     } catch (err) {
       push(err instanceof ApiClientError ? err.message : '启动解题失败', 'error')
@@ -283,9 +352,11 @@ export function ChallengeCockpit({
   const buildInteractivePrompt = (latest?: KernelChallengeOut | null) => {
     const ch = latest ?? challenge
     const urls: string[] = []
-    if (ch?.environment?.accessUrl) urls.push(ch.environment.accessUrl)
-    for (const u of ch?.environment?.accessUrls || []) {
-      if (u && !urls.includes(u)) urls.push(u)
+    if (ch?.environment?.status === 'ready') {
+      if (ch.environment.accessUrl) urls.push(ch.environment.accessUrl)
+      for (const u of ch.environment.accessUrls || []) {
+        if (u && !urls.includes(u)) urls.push(u)
+      }
     }
     const parts = [
       `请帮我分析并解出这道 CTF 题目「${ch?.title || challengeRef.title}」：`,
@@ -303,14 +374,15 @@ export function ChallengeCockpit({
 
   const handleQuickLaunch = async () => {
     let latest = challenge
-    if (!latest || !latest.environment?.accessUrl) {
+    if (!latest || latest.environment?.status !== 'ready') {
       try {
         latest = await api.getKernelChallenge(challengeRef.id)
         setChallenge(latest)
       } catch {
-        // use existing state
+        // fallback
       }
     }
+    setPanelOpen(false)
     onQuickPrompt(buildInteractivePrompt(latest))
   }
 
@@ -318,168 +390,261 @@ export function ChallengeCockpit({
   const candidateFlag = challenge?.candidateFlag || challengeRef.candidateFlag
 
   return (
-    <div className="space-y-4">
-      {/* Main Challenge Cockpit Card */}
-      <div className="rounded-2xl border border-line bg-surface p-5 shadow-editorial">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge className="border-indigo-300/60 bg-indigo-50 text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950/60 dark:text-indigo-300">
-                <Flag className="h-3 w-3" />
-                {challengeRef.platformName || 'CTF2'}
-              </Badge>
-              {challenge?.category && (
-                <Badge className="font-mono text-[10px]">{challenge.category}</Badge>
-              )}
-              <Badge pulse={isSolving} className={statusMeta.badge}>
-                {statusMeta.label}
-              </Badge>
-              {(challenge?.score ?? challengeRef.score) != null && (
-                <span className="font-mono text-xs font-semibold text-ink-secondary">
-                  {challenge?.score ?? challengeRef.score} pts
-                </span>
-              )}
-            </div>
-            <h2 className="mt-2 text-base font-semibold text-ink">
-              {challenge?.title || challengeRef.title}
-            </h2>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-1.5">
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => void Promise.all([loadChallenge(), onRefreshSession()])}
-              title="刷新题目与解题状态"
-            >
-              <RefreshCw className="h-3.5 w-3.5" />
-            </Button>
-            {isSolving ? (
-              <Button size="sm" variant="danger" loading={busyAction} onClick={() => void handleStopSolve()}>
-                <Square className="h-3 w-3" />
-                停止自动解题
-              </Button>
+    <div className="shrink-0 border-b border-line bg-surface/90 backdrop-blur">
+      {/* Always-visible Sticky Cockpit Bar */}
+      <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-2 px-4 py-2.5 sm:px-6">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setPanelOpen((v) => !v)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-subtle px-2 py-1 text-xs font-medium text-ink transition-colors hover:border-accent/50"
+            title={panelOpen ? '收起题目驾驶舱与自动解题流' : '展开题目驾驶舱与自动解题流'}
+          >
+            {panelOpen ? (
+              <ChevronDown className="h-3.5 w-3.5 text-ink-muted" />
             ) : (
-              <Button size="sm" variant="primary" loading={busyAction} onClick={() => void handleStartSolve()}>
-                <Play className="h-3 w-3" />
-                启动自动解题
-              </Button>
+              <ChevronRight className="h-3.5 w-3.5 text-ink-muted" />
             )}
-            <Button size="sm" variant="secondary" onClick={() => void handleOpenWriteup()}>
-              <FileText className="h-3.5 w-3.5" />
-              题解
-            </Button>
-            {effectiveScanId && (
-              <Link to={`/activity?scan=${encodeURIComponent(effectiveScanId)}`}>
-                <Button size="sm" variant="ghost" title="在活动流全屏查看">
-                  <ExternalLink className="h-3.5 w-3.5" />
-                </Button>
-              </Link>
-            )}
-          </div>
-        </div>
+            <Flag className="h-3 w-3 text-accent" />
+            <span className="truncate max-w-[160px]">{challenge?.title || challengeRef.title}</span>
+          </button>
 
-        {/* Target Environment URLs */}
-        {targetUrls.length > 0 && (
-          <div className="mt-3.5 flex flex-wrap items-center gap-2 rounded-xl border border-indigo-300/40 bg-accent-soft/40 px-3.5 py-2.5 text-xs">
-            <Globe className="h-3.5 w-3.5 shrink-0 text-accent" />
-            <span className="font-medium text-ink">靶机入口</span>
-            {targetUrls.map((u) => (
-              <button
-                key={u}
-                type="button"
-                onClick={() => {
-                  void navigator.clipboard?.writeText(u)
-                  setCopiedUrl(u)
-                  window.setTimeout(() => setCopiedUrl(null), 1500)
-                }}
-                className="inline-flex items-center gap-1.5 rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-[11px] text-ink hover:border-accent"
-                title="点击复制靶机地址"
-              >
-                <span>{u}</span>
-                {copiedUrl === u ? (
-                  <Check className="h-3 w-3 text-emerald-500" />
-                ) : (
-                  <Copy className="h-3 w-3 text-ink-muted" />
-                )}
-              </button>
-            ))}
-          </div>
-        )}
+          <Badge pulse={isSolving} className={statusMeta.badge}>
+            {statusMeta.label}
+          </Badge>
 
-        {/* Error Banner */}
-        {(challenge?.lastError || challenge?.environment?.lastError) && (
-          <div className="mt-3 flex items-start gap-2 rounded-xl border border-red-300/60 bg-red-50/70 px-3.5 py-2.5 text-xs text-red-800 dark:border-red-900/70 dark:bg-red-950/40 dark:text-red-300">
-            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <span>{challenge?.lastError || challenge?.environment?.lastError}</span>
-          </div>
-        )}
-
-        {/* Confirmed or Candidate Flag Bar */}
-        {confirmedFlag ? (
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-300/60 bg-emerald-50/70 px-3.5 py-2.5 text-xs dark:border-emerald-800 dark:bg-emerald-950/40">
-            <div className="flex items-center gap-2 font-mono text-emerald-800 dark:text-emerald-200">
-              <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-500" />
-              <span className="font-sans font-medium">已确证 Flag：</span>
-              <span>{confirmedFlag}</span>
-            </div>
-          </div>
-        ) : (
-          <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-line bg-subtle/60 px-3 py-2">
-            <Flag className="h-3.5 w-3.5 shrink-0 text-accent" />
-            <Input
-              value={flagDraft}
-              onChange={(e) => setFlagDraft(e.target.value)}
-              placeholder={candidateFlag || '输入或确认候选 Flag 提交到平台…'}
-              className="h-8 flex-1 font-mono text-xs"
-            />
-            <Button
-              size="sm"
-              variant="primary"
-              loading={submittingFlag}
-              disabled={!flagDraft.trim()}
-              onClick={() => void handleSubmitFlag()}
-            >
-              提交 Flag
-            </Button>
-          </div>
-        )}
-
-        {/* Description & Attachments */}
-        {(challenge?.description || (challenge?.attachments && challenge.attachments.length > 0)) && (
-          <div className="mt-3.5 border-t border-line-subtle pt-3">
+          {readyTargetUrls.length > 0 && (
             <button
               type="button"
-              onClick={() => setDescOpen((v) => !v)}
-              className="flex items-center gap-1.5 text-xs font-medium text-ink-secondary hover:text-ink"
+              onClick={() => {
+                void navigator.clipboard?.writeText(readyTargetUrls[0])
+                setCopiedUrl(readyTargetUrls[0])
+                window.setTimeout(() => setCopiedUrl(null), 1500)
+              }}
+              className="inline-flex max-w-[260px] items-center gap-1.5 rounded-md border border-indigo-300/50 bg-accent-soft/40 px-2 py-0.5 font-mono text-[11px] text-ink transition-colors hover:border-accent"
+              title={`点击复制靶机地址：${readyTargetUrls[0]}`}
             >
-              {descOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-              <span>题面说明与附件</span>
-              {challenge?.attachments && challenge.attachments.length > 0 && (
-                <Badge className="ml-1 text-[10px]">
-                  <Paperclip className="h-2.5 w-2.5" />
-                  {challenge.attachments.length} 个附件
-                  {challenge.attachmentsReady ? ' · 已落盘' : ''}
-                </Badge>
+              <Globe className="h-3 w-3 shrink-0 text-accent" />
+              <span className="truncate">{readyTargetUrls[0]}</span>
+              {copiedUrl === readyTargetUrls[0] ? (
+                <Check className="h-3 w-3 shrink-0 text-emerald-500" />
+              ) : (
+                <Copy className="h-3 w-3 shrink-0 text-ink-muted" />
               )}
             </button>
+          )}
 
-            {descOpen && (
-              <div className="mt-2.5 space-y-2.5">
-                {challenge?.description && (
-                  <div className="rounded-xl border border-line-subtle bg-subtle/40 px-4 py-3 text-sm">
-                    <MarkdownView content={challenge.description} />
+          {(effectiveScanId || events.length > 0) && (
+            <button
+              type="button"
+              onClick={() => {
+                setPanelOpen(true)
+                setActiveTab('trace')
+              }}
+              className="inline-flex items-center gap-1.5 rounded-md border border-line-subtle bg-subtle/80 px-2 py-0.5 text-[11px] text-ink-secondary transition-colors hover:border-accent/50 hover:text-ink"
+              title="查看后台自动解题实时轨迹"
+            >
+              <Activity
+                className={cn(
+                  'h-3 w-3 shrink-0',
+                  isSolving ? 'animate-pulse text-emerald-500' : 'text-ink-muted',
+                )}
+              />
+              <span className="font-mono tabular-nums">{events.length} 事件</span>
+              {latestEvent && !panelOpen && (
+                <span className="hidden max-w-[200px] truncate font-mono text-[10px] text-ink-muted md:inline">
+                  · {cleanEventSummary(latestEvent)}
+                </span>
+              )}
+            </button>
+          )}
+        </div>
+
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => void Promise.all([loadChallenge(), onRefreshSession()])}
+            title="刷新题目与靶机状态"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+          </Button>
+          {isSolving ? (
+            <Button size="sm" variant="danger" loading={busyAction} onClick={() => void handleStopSolve()}>
+              <Square className="h-3 w-3" />
+              停止自动解题
+            </Button>
+          ) : (
+            <Button size="sm" variant="primary" loading={busyAction} onClick={() => void handleStartSolve()}>
+              <Play className="h-3 w-3" />
+              启动自动解题
+            </Button>
+          )}
+          <Button size="sm" variant="secondary" onClick={() => void handleOpenWriteup()}>
+            <FileText className="h-3.5 w-3.5" />
+            题解
+          </Button>
+          {effectiveScanId && (
+            <Link to={`/activity?scan=${encodeURIComponent(effectiveScanId)}`}>
+              <Button size="sm" variant="ghost" title="在智能体活动流全屏查看">
+                <ExternalLink className="h-3.5 w-3.5" />
+              </Button>
+            </Link>
+          )}
+        </div>
+      </div>
+
+      {/* Expandable Docked Cockpit Panel */}
+      {panelOpen && (
+        <div className="border-t border-line-subtle bg-subtle/40">
+          <div className="mx-auto max-w-4xl space-y-3 px-4 py-3.5 sm:px-6">
+            {/* Error Banner */}
+            {(challenge?.lastError || challenge?.environment?.lastError) && (
+              <div className="flex items-start gap-2 rounded-xl border border-red-300/60 bg-red-50/70 px-3 py-2 text-xs text-red-800 dark:border-red-900/70 dark:bg-red-950/40 dark:text-red-300">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>{challenge?.lastError || challenge?.environment?.lastError}</span>
+              </div>
+            )}
+
+            {/* Flag Bar */}
+            {confirmedFlag ? (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-300/60 bg-emerald-50/70 px-3 py-2 text-xs dark:border-emerald-800 dark:bg-emerald-950/40">
+                <div className="flex items-center gap-2 font-mono text-emerald-800 dark:text-emerald-200">
+                  <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-500" />
+                  <span className="font-semibold">已确认 Flag：</span>
+                  <span className="break-all">{confirmedFlag}</span>
+                </div>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(confirmedFlag)
+                    push('已复制 Flag', 'success')
+                  }}
+                >
+                  <Copy className="h-3 w-3" />
+                  复制
+                </Button>
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  value={flagDraft}
+                  onChange={(e) => setFlagDraft(e.target.value)}
+                  placeholder={candidateFlag ? `候选 Flag: ${candidateFlag}` : '输入或粘贴 Flag 提交验真…'}
+                  className="h-8 flex-1 font-mono text-xs"
+                />
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  loading={submittingFlag}
+                  disabled={!flagDraft.trim()}
+                  onClick={() => void handleSubmitFlag()}
+                >
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  提交 Flag
+                </Button>
+              </div>
+            )}
+
+            {/* Tabs: Auto-Solve Live Trace vs Challenge Brief */}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex rounded-lg border border-line bg-surface p-0.5 text-[11px]">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('trace')}
+                  className={cn(
+                    'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 font-medium transition-colors',
+                    activeTab === 'trace'
+                      ? 'bg-subtle text-ink shadow-editorial'
+                      : 'text-ink-muted hover:text-ink',
+                  )}
+                >
+                  <Activity className="h-3 w-3 text-accent" />
+                  后台自动解题流 ({events.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('brief')}
+                  className={cn(
+                    'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 font-medium transition-colors',
+                    activeTab === 'brief'
+                      ? 'bg-subtle text-ink shadow-editorial'
+                      : 'text-ink-muted hover:text-ink',
+                  )}
+                >
+                  <FileText className="h-3 w-3" />
+                  题面与附件
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2 text-[11px]">
+                {isSolving && (
+                  <span className="inline-flex items-center gap-1.5 text-accent">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    {streamConnected ? 'SSE 实时推送中' : '连接实时流…'}
+                  </span>
+                )}
+                {!hasChatMessages && (
+                  <Button size="sm" variant="secondary" onClick={() => void handleQuickLaunch()}>
+                    <Send className="h-3 w-3" />
+                    一键带题面开始对话解题
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            {activeTab === 'trace' ? (
+              <div className="max-h-[34vh] space-y-1.5 overflow-y-auto rounded-xl border border-line bg-canvas/70 p-2.5">
+                {loadingEvents && events.length === 0 ? (
+                  <div className="flex items-center gap-2 py-4 text-xs text-ink-muted">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    正在拉取自动解题过程记录…
                   </div>
+                ) : events.length === 0 ? (
+                  <div className="py-5 text-center text-xs text-ink-muted">
+                    {isSolving
+                      ? '任务已受理，正在等待 Worker 启动靶机并推送首条执行事件…'
+                      : '暂无后台自动解题记录，可点击右上角「启动自动解题」或直接在下方对话交互。'}
+                  </div>
+                ) : (
+                  <>
+                    {events.map((ev) => (
+                      <SolveEventRow key={ev.id} ev={ev} />
+                    ))}
+                    <div ref={traceEndRef} />
+                  </>
+                )}
+              </div>
+            ) : (
+              <div className="max-h-[34vh] space-y-2.5 overflow-y-auto rounded-xl border border-line bg-surface p-3.5 text-xs">
+                <div className="flex flex-wrap items-center gap-2 text-[11px] text-ink-secondary">
+                  <Badge>{challengeRef.platformName || 'CTF2'}</Badge>
+                  {challenge?.category && <Badge className="font-mono">{challenge.category}</Badge>}
+                  {(challenge?.score ?? challengeRef.score) != null && (
+                    <span className="font-mono font-semibold">{challenge?.score ?? challengeRef.score} pts</span>
+                  )}
+                  {challenge?.remoteId && (
+                    <span className="font-mono text-[10px] text-ink-muted">
+                      remoteId: {challenge.remoteId}
+                    </span>
+                  )}
+                </div>
+                {challenge?.description ? (
+                  <MarkdownView content={challenge.description} />
+                ) : (
+                  <p className="text-ink-muted">暂无题面描述。</p>
                 )}
                 {challenge?.attachments && challenge.attachments.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5 border-t border-line-subtle pt-2.5">
+                    <Paperclip className="h-3.5 w-3.5 text-ink-muted" />
+                    <span className="text-ink-secondary">题目附件：</span>
                     {challenge.attachments.map((att, idx) => (
                       <span
                         key={idx}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-subtle px-2.5 py-1 font-mono text-[11px] text-ink-secondary"
+                        className="rounded-md border border-line bg-subtle px-2 py-0.5 font-mono text-[11px] text-ink"
                       >
-                        <Paperclip className="h-3 w-3 text-accent" />
-                        {att.name || `attachment-${idx + 1}`}
+                        {att.name || att.url || `附件 ${idx + 1}`}
                       </span>
                     ))}
                   </div>
@@ -487,79 +652,6 @@ export function ChallengeCockpit({
               </div>
             )}
           </div>
-        )}
-      </div>
-
-      {/* Live Autonomous Solve Event Timeline */}
-      {(effectiveScanId || isSolving) && (
-        <div className="rounded-2xl border border-line bg-subtle/45 px-4 py-3.5">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <button
-              type="button"
-              onClick={() => setTraceOpen((v) => !v)}
-              className="flex items-center gap-2 text-xs font-medium text-ink"
-            >
-              {traceOpen ? (
-                <ChevronDown className="h-3.5 w-3.5 text-ink-muted" />
-              ) : (
-                <ChevronRight className="h-3.5 w-3.5 text-ink-muted" />
-              )}
-              <Activity className={cn('h-3.5 w-3.5', isSolving ? 'text-accent' : 'text-emerald-500')} />
-              <span>后台自动解题过程流</span>
-              <span className="font-mono text-[11px] text-ink-muted">
-                ({events.length} 条事件)
-              </span>
-            </button>
-
-            <div className="flex items-center gap-2 text-[11px]">
-              {isSolving && (
-                <span className="inline-flex items-center gap-1.5 text-accent">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  {streamConnected ? 'SSE 实时推送中' : '排队 / 连接事件流…'}
-                </span>
-              )}
-            </div>
-          </div>
-
-          {traceOpen && (
-            <div className="mt-3 space-y-1.5">
-              {loadingEvents && events.length === 0 ? (
-                <div className="flex items-center gap-2 py-4 text-xs text-ink-muted">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  正在拉取自动解题过程记录…
-                </div>
-              ) : events.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-line bg-surface/60 px-4 py-4 text-xs text-ink-muted">
-                  {isSolving
-                    ? '任务已受理，正在排队分配 Worker 与启动靶机环境；首条执行事件到达后将实时显示在这里。你也可以直接在下方对话栏与智能体协同交互。'
-                    : '暂无自动解题过程记录。'}
-                </div>
-              ) : (
-                <div className="max-h-96 space-y-1.5 overflow-y-auto pr-1">
-                  {events.map((ev) => (
-                    <SolveEventRow key={ev.id} ev={ev} />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Quick Interactive Chat Launcher when no chat messages yet */}
-      {!hasChatMessages && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dashed border-line bg-surface/60 px-4 py-3 text-xs">
-          <span className="text-ink-secondary">
-            可在下方直接与对话智能体协同分析本题（支持调用沙箱与 <code className="font-mono">ctf2-suvex</code> MCP 工具）。
-          </span>
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => void handleQuickLaunch()}
-          >
-            <Send className="h-3 w-3" />
-            一键带题面开始对话解题
-          </Button>
         </div>
       )}
 

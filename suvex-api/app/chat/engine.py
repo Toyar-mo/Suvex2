@@ -1770,29 +1770,41 @@ async def _tool_create_scan(ctx: _ToolContext, args: dict[str, Any]) -> str:
 
 async def _tool_list_challenges(ctx: _ToolContext, args: dict[str, Any]) -> str:
     from app.kernel import service as kernel_service
+    from app.kernel.models import KernelCompetition
 
     limit = _int_arg(args, "limit", default=10, low=1, high=50)
     status = str(args.get("status") or "").strip() or None
     rows = kernel_service.list_challenges(ctx.db, status=status)[:limit]
     if not rows:
         return "库里没有符合条件的题目。"
+    comp_ids = {c.competition_id for c in rows if c.competition_id}
+    comp_map = (
+        {
+            comp.id: comp
+            for comp in ctx.db.query(KernelCompetition)
+            .filter(KernelCompetition.id.in_(comp_ids))
+            .all()
+        }
+        if comp_ids
+        else {}
+    )
     lines = [f"共 {len(rows)} 道题："]
     for challenge in rows:
         env = kernel_service.latest_environment(ctx.db, challenge.id)
         urls: list[str] = []
-        if env is not None:
+        if env is not None and env.status == "ready":
             if env.access_url:
                 urls.append(env.access_url)
             for u in list(env.access_urls or []):
                 if u and u not in urls:
                     urls.append(u)
-        env_hint = ""
-        if env is not None and urls:
-            env_hint = f" 靶机({env.status})={', '.join(urls)}"
+        env_hint = f" 靶机(ready)={', '.join(urls)}" if urls else ""
+        comp = comp_map.get(challenge.competition_id or "")
+        pg_hint = f" practiceGroundId={comp.remote_id}" if comp and comp.remote_id else ""
         remote_hint = f" remoteId={challenge.remote_id}" if challenge.remote_id else ""
         lines.append(
             f"- `{challenge.id}` {challenge.title or '(无标题)'}"
-            f" [{challenge.category or 'unknown'}] 状态={challenge.status}{remote_hint}{env_hint}"
+            f" [{challenge.category or 'unknown'}] 状态={challenge.status}{pg_hint}{remote_hint}{env_hint}"
         )
     return "\n".join(lines)
 
@@ -3801,19 +3813,24 @@ def _challenge_category(db: Session, session: ChatSession) -> str | None:
 def _render_bound_challenge_section(db: Session, session: ChatSession) -> str:
     """把会话绑定的 CTF 题目实时元数据与靶机入口注入系统提示词。
 
-    实测根因：此前对话页只注入了题型手册，没有给模型题目的 `access_url` / `remote_id`，
-    导致模型拿 `ctf2:<remote_id>` 乱猜 `<remote_id>.ctf2.dasctf.com`、探测 198.18.x.x Fake-IP
-    白跑上百轮，而真正的动态靶机 URL 明明就在 `suvex_environments` 表里。
+    实测根因：此前对话页只注入了题型手册，没有给模型题目的 `access_url` / `remote_id` /
+    `practice_ground_id`，导致模型拿 `ctf2:<remote_id>` 乱猜 `<remote_id>.ctf2.dasctf.com`
+    或反复翻找练习场列表，而真正的动态靶机 URL 与 `practice_ground_id` 明明就在本地库里。
     """
     if not session.challenge_id:
         return ""
     from app.kernel import service as kernel_service
-    from app.kernel.models import KernelChallenge
+    from app.kernel.models import KernelChallenge, KernelCompetition
 
     challenge = db.get(KernelChallenge, session.challenge_id)
     if challenge is None:
         return ""
 
+    comp = (
+        db.get(KernelCompetition, challenge.competition_id)
+        if challenge.competition_id
+        else None
+    )
     env = kernel_service.latest_environment(db, challenge.id)
     urls: list[str] = []
     if env is not None:
@@ -3826,20 +3843,31 @@ def _render_bound_challenge_section(db: Session, session: ChatSession) -> str:
     lines = [
         "\n\n## 当前绑定 CTF 题目与靶机状态（服务端实时事实）",
         f"- 本地题目 ID：`{challenge.id}`",
-        f"- 远端题目 ID (`remote_id`)：`{challenge.remote_id}`",
-        f"- 题目名称：{challenge.title or '(无标题)'}",
-        f"- 分类：{challenge.category or 'unknown'} · 状态：{challenge.status}",
+        f"- 远端题目 ID (`challenge_id` / `remote_id`)：`{challenge.remote_id}`",
     ]
+    if comp is not None and comp.remote_id:
+        lines.append(
+            f"- 所属题场 (`practice_ground_id` / `competition_id`)：`{comp.remote_id}`"
+            f"（名称：{comp.name or '未知'}，类型：{comp.kind}）"
+        )
+    lines.extend(
+        [
+            f"- 题目名称：{challenge.title or '(无标题)'}",
+            f"- 分类：{challenge.category or 'unknown'} · 状态：{challenge.status}",
+        ]
+    )
     if challenge.score is not None:
         lines.append(f"- 分值：{challenge.score} pts")
-    if env is not None and urls:
-        lines.append(f"- **动态靶机入口（状态={env.status}）**：{', '.join(urls)}")
+    if env is not None and env.status == "ready" and urls:
+        lines.append(f"- **动态靶机入口（状态=ready，可直接访问）**：{', '.join(urls)}")
         if env.expires_at is not None:
             lines.append(f"- 靶机到期时间：{env.expires_at.isoformat()}")
     else:
+        env_state = env.status if env is not None else "none"
         lines.append(
-            "- **当前尚无运行中的动态靶机**：请直接调用已挂载的 `ctf2-suvex` MCP 工具启动靶机，"
-            "或告知用户点击上方「启动自动解题」拉起靶机。"
+            f"- **当前无运行中的动态靶机（最近环境状态={env_state}）**："
+            "请直接使用上方给出的 `practice_ground_id` 与 `challenge_id` 调用已挂载的 "
+            "`ctf2-suvex` MCP 工具启动靶机，无需遍历练习场列表。"
         )
     attachments = list(challenge.attachments or [])
     if attachments:

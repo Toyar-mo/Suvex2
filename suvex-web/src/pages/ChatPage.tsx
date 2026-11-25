@@ -1635,6 +1635,18 @@ export function ChatPage() {
           </div>
         )}
 
+        {/* Pinned CTF Challenge Cockpit (always accessible above scroll area) */}
+        {detail?.challenge && (
+          <ChallengeCockpit
+            challengeRef={detail.challenge}
+            hasChatMessages={displayBlocks.length > 0}
+            onQuickPrompt={(prompt) => void handleSend(prompt)}
+            onRefreshSession={() =>
+              activeId ? loadDetail(activeId, { silent: true }) : Promise.resolve()
+            }
+          />
+        )}
+
         {/* Scrollable Message Stream */}
         <div
           ref={scrollAreaRef}
@@ -1649,15 +1661,6 @@ export function ChatPage() {
               </div>
             ) : (
               <>
-                {detail?.challenge && (
-                  <ChallengeCockpit
-                    challengeRef={detail.challenge}
-                    hasChatMessages={displayBlocks.length > 0}
-                    onQuickPrompt={(prompt) => void handleSend(prompt)}
-                    onRefreshSession={() => (activeId ? loadDetail(activeId) : Promise.resolve())}
-                  />
-                )}
-
                 {(!detail || displayBlocks.length === 0) && !detail?.challenge ? (
                   <div className="py-10">
                     <EmptyState
