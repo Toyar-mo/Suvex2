@@ -31,6 +31,7 @@ import {
   Input,
   Modal,
   PageHeader,
+  Select,
   Skeleton,
   Textarea,
 } from '@/components/ui/primitives'
@@ -725,14 +726,15 @@ export function ToolsPage() {
                 </div>
                 <div>
                   <label className="mb-1.5 block text-xs font-medium text-ink-secondary">传输方式</label>
-                  <select
+                  <Select
                     value={mcpType}
-                    onChange={(e) => setMcpType(e.target.value as 'http' | 'stdio')}
-                    className="h-9 w-full rounded-lg border border-line bg-surface px-3 text-xs text-ink"
-                  >
-                    <option value="http">HTTP / Streamable</option>
-                    <option value="stdio">本地 stdio 进程</option>
-                  </select>
+                    onChange={(v) => setMcpType(v as 'http' | 'stdio')}
+                    className="w-full"
+                    options={[
+                      { value: 'http', label: 'HTTP / Streamable', description: '远程 HTTP MCP 服务' },
+                      { value: 'stdio', label: '本地 stdio 进程', description: '本地命令行子进程' },
+                    ]}
+                  />
                 </div>
               </div>
 

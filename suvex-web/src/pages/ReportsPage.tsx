@@ -13,6 +13,7 @@ import {
   Input,
   Modal,
   PageHeader,
+  Select,
   Skeleton,
 } from '@/components/ui/primitives'
 
@@ -212,43 +213,43 @@ export function ReportsPage() {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="mb-1.5 block text-xs font-medium text-ink-secondary">范围口径</label>
-              <select
+              <Select
                 value={scopeKind}
-                onChange={(e) => setScopeKind(e.target.value as 'scan' | 'target')}
-                className="h-9 w-full rounded-lg border border-line bg-surface px-3 text-xs text-ink"
-              >
-                <option value="scan">按单次扫描</option>
-                <option value="target">按目标资产汇总</option>
-              </select>
+                onChange={(v) => setScopeKind(v as 'scan' | 'target')}
+                className="w-full"
+                options={[
+                  { value: 'scan', label: '按单次扫描' },
+                  { value: 'target', label: '按目标资产汇总' },
+                ]}
+              />
             </div>
             <div>
               <label className="mb-1.5 block text-xs font-medium text-ink-secondary">导出格式</label>
-              <select
+              <Select
                 value={format}
-                onChange={(e) => setFormat(e.target.value as 'markdown' | 'pdf')}
-                className="h-9 w-full rounded-lg border border-line bg-surface px-3 text-xs text-ink"
-              >
-                <option value="markdown">Markdown (.md)</option>
-                <option value="pdf">PDF (.pdf)</option>
-              </select>
+                onChange={(v) => setFormat(v as 'markdown' | 'pdf')}
+                className="w-full"
+                options={[
+                  { value: 'markdown', label: 'Markdown (.md)' },
+                  { value: 'pdf', label: 'PDF (.pdf)' },
+                ]}
+              />
             </div>
           </div>
 
           {scopeKind === 'scan' ? (
             <div>
               <label className="mb-1.5 block text-xs font-medium text-ink-secondary">选择扫描</label>
-              <select
+              <Select
                 value={scanId}
-                onChange={(e) => setScanId(e.target.value)}
-                className="h-9 w-full rounded-lg border border-line bg-surface px-3 text-xs text-ink"
-                required
-              >
-                {scans.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name || s.target || s.id}
-                  </option>
-                ))}
-              </select>
+                onChange={setScanId}
+                className="w-full"
+                placeholder="请选择扫描任务"
+                options={scans.map((s) => ({
+                  value: s.id,
+                  label: s.name || s.target || s.id,
+                }))}
+              />
             </div>
           ) : (
             <div>

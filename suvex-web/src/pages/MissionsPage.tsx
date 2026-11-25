@@ -26,6 +26,7 @@ import {
   Input,
   Modal,
   PageHeader,
+  Select,
   Skeleton,
   Textarea,
 } from '@/components/ui/primitives'
@@ -457,18 +458,19 @@ export function MissionsPage() {
                     ))}
                     <form onSubmit={handleAddIntent} className="space-y-1.5 pt-2">
                       {graph.goals.length > 0 && (
-                        <select
+                        <Select
+                          size="sm"
                           value={newIntentGoalId}
-                          onChange={(e) => setNewIntentGoalId(e.target.value)}
-                          className="h-7 w-full rounded-md border border-line bg-surface px-2 text-[11px] text-ink-secondary"
-                        >
-                          <option value="">关联目标（可选）</option>
-                          {graph.goals.map((g) => (
-                            <option key={g.id} value={g.id}>
-                              G{g.seq}: {g.text.slice(0, 30)}
-                            </option>
-                          ))}
-                        </select>
+                          onChange={setNewIntentGoalId}
+                          className="w-full"
+                          options={[
+                            { value: '', label: '关联目标（可选）' },
+                            ...graph.goals.map((g) => ({
+                              value: g.id,
+                              label: `G${g.seq}: ${g.text.slice(0, 30)}`,
+                            })),
+                          ]}
+                        />
                       )}
                       <div className="flex gap-1.5">
                         <Input

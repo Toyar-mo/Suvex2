@@ -53,7 +53,7 @@ import type {
   ChatTurnRunOut,
   ProviderOut,
 } from '@/types/api'
-import { Badge, Button, Drawer, EmptyState } from '@/components/ui/primitives'
+import { Badge, Button, Drawer, EmptyState, Select } from '@/components/ui/primitives'
 import { MarkdownView } from '@/components/ui/MarkdownView'
 import { cn } from '@/lib/cn'
 
@@ -1292,39 +1292,49 @@ export function ChatPage() {
 
           <div className="flex flex-wrap items-center gap-1.5">
             {profiles.length > 0 && (
-              <div className="flex items-center gap-1.5 rounded-lg border border-line bg-subtle px-2.5 py-1 text-xs">
-                <Bot className="h-3.5 w-3.5 text-accent" />
-                <select
-                  value={selectedProfileId}
-                  onChange={(e) => void handleProfileChange(e.target.value)}
-                  className="max-w-[130px] bg-transparent text-xs text-ink focus:outline-none"
-                  title="绑定 Agent 角色画像（控制工具白名单与技能注入）"
-                >
-                  <option value="">默认通用角色</option>
-                  {profiles.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <Select
+                size="sm"
+                variant="subtle"
+                align="right"
+                value={selectedProfileId}
+                onChange={(v) => void handleProfileChange(v)}
+                icon={<Bot className="h-3.5 w-3.5 text-accent" />}
+                className="max-w-[164px]"
+                menuClassName="w-60"
+                title="绑定 Agent 角色画像（控制工具白名单与技能注入）"
+                options={[
+                  {
+                    value: '',
+                    label: '默认通用角色',
+                    description: '使用平台默认全量工具与技能集',
+                  },
+                  ...profiles.map((p) => ({
+                    value: p.id,
+                    label: p.name,
+                    description: p.description || undefined,
+                  })),
+                ]}
+              />
             )}
 
             {providers.length > 0 && (
-              <div className="flex items-center gap-1.5 rounded-lg border border-line bg-subtle px-2.5 py-1 text-xs">
-                <Cpu className="h-3.5 w-3.5 text-ink-muted" />
-                <select
-                  value={selectedProviderId}
-                  onChange={(e) => setSelectedProviderId(e.target.value)}
-                  className="max-w-[140px] bg-transparent text-xs text-ink focus:outline-none"
-                >
-                  {providers.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <Select
+                size="sm"
+                variant="subtle"
+                align="right"
+                value={selectedProviderId}
+                onChange={setSelectedProviderId}
+                icon={<Cpu className="h-3.5 w-3.5 text-ink-muted" />}
+                className="max-w-[164px]"
+                menuClassName="w-60"
+                title="切换当前会话使用的模型接入点"
+                options={providers.map((p) => ({
+                  value: p.id,
+                  label: p.label,
+                  description: p.model,
+                  badge: p.isDefault ? '默认' : undefined,
+                }))}
+              />
             )}
 
             {activeId && (

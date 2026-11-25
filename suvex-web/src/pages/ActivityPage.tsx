@@ -17,7 +17,7 @@ import { api, ApiClientError } from '@/lib/api'
 import { useToast } from '@/lib/toast'
 import { formatRelativeTime, SCAN_STATUS_META } from '@/lib/format'
 import type { ActivityEventOut, AgentOut, ScanOut } from '@/types/api'
-import { Badge, Button, EmptyState, Input } from '@/components/ui/primitives'
+import { Badge, Button, EmptyState, Input, Select } from '@/components/ui/primitives'
 import { cn } from '@/lib/cn'
 
 const SWIMLANES = [
@@ -179,18 +179,22 @@ export function ActivityPage() {
             <h1 className="text-sm font-semibold text-ink">智能体实时活动流</h1>
           </div>
 
-          <select
+          <Select
+            size="sm"
+            variant="subtle"
             value={selectedScanId}
-            onChange={(e) => handleScanChange(e.target.value)}
-            className="h-8 max-w-xs rounded-lg border border-line bg-subtle px-2.5 text-xs text-ink focus:border-accent focus:outline-none"
-          >
-            <option value="">全局事件流（全部扫描）</option>
-            {scans.map((s) => (
-              <option key={s.id} value={s.id}>
-                [{SCAN_STATUS_META[s.status]?.label || s.status}] {s.name || s.target || s.id}
-              </option>
-            ))}
-          </select>
+            onChange={handleScanChange}
+            className="min-w-[200px] max-w-xs"
+            menuClassName="w-72"
+            options={[
+              { value: '', label: '全局事件流（全部扫描）' },
+              ...scans.map((s) => ({
+                value: s.id,
+                label: s.name || s.target || s.id,
+                badge: SCAN_STATUS_META[s.status]?.label || s.status,
+              })),
+            ]}
+          />
 
           <Badge
             pulse={connected}

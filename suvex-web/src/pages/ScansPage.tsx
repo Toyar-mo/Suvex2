@@ -52,6 +52,7 @@ import {
   Input,
   Modal,
   PageHeader,
+  Select,
   Skeleton,
   Textarea,
 } from '@/components/ui/primitives'
@@ -558,31 +559,27 @@ export function ScansPage() {
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
               <label className="mb-1 block text-xs font-medium text-ink-secondary">基线扫描 A（较早）</label>
-              <select
+              <Select
                 value={compareA}
-                onChange={(e) => setCompareA(e.target.value)}
-                className="h-9 w-full rounded-lg border border-line bg-surface px-2.5 text-xs text-ink"
-              >
-                {scans.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name || s.target || s.id}
-                  </option>
-                ))}
-              </select>
+                onChange={setCompareA}
+                className="w-full"
+                options={scans.map((s) => ({
+                  value: s.id,
+                  label: s.name || s.target || s.id,
+                }))}
+              />
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-ink-secondary">最新扫描 B（较新）</label>
-              <select
+              <Select
                 value={compareB}
-                onChange={(e) => setCompareB(e.target.value)}
-                className="h-9 w-full rounded-lg border border-line bg-surface px-2.5 text-xs text-ink"
-              >
-                {scans.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name || s.target || s.id}
-                  </option>
-                ))}
-              </select>
+                onChange={setCompareB}
+                className="w-full"
+                options={scans.map((s) => ({
+                  value: s.id,
+                  label: s.name || s.target || s.id,
+                }))}
+              />
             </div>
           </div>
 
@@ -748,18 +745,20 @@ export function ScansPage() {
 
             <div>
               <label className="mb-2 block text-xs font-semibold text-ink">模型接入点</label>
-              <select
+              <Select
                 value={providerId}
-                onChange={(e) => setProviderId(e.target.value)}
-                className="h-9 w-full rounded-lg border border-line bg-surface px-3 text-xs text-ink focus:border-accent focus:outline-none"
-              >
-                <option value="auto">自动选择（按默认模型路由）</option>
-                {providers.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.label} · {p.model}
-                  </option>
-                ))}
-              </select>
+                onChange={setProviderId}
+                className="w-full"
+                options={[
+                  { value: 'auto', label: '自动选择（按默认模型路由）' },
+                  ...providers.map((p) => ({
+                    value: p.id,
+                    label: p.label,
+                    description: p.model,
+                    badge: p.isDefault ? '默认' : undefined,
+                  })),
+                ]}
+              />
             </div>
           </div>
 

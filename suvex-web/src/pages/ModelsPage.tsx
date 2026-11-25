@@ -20,6 +20,7 @@ import {
   Input,
   Modal,
   PageHeader,
+  Select,
   Skeleton,
 } from '@/components/ui/primitives'
 
@@ -304,14 +305,15 @@ export function ModelsPage() {
           <div className="grid gap-3 sm:grid-cols-3">
             <div>
               <label className="mb-1.5 block text-xs font-medium text-ink-secondary">接入类型</label>
-              <select
+              <Select
                 value={kind}
-                onChange={(e) => setKind(e.target.value as ProviderKind)}
-                className="h-9 w-full rounded-lg border border-line bg-surface px-3 text-xs text-ink"
-              >
-                <option value="cloud">云端 API</option>
-                <option value="local">本地部署</option>
-              </select>
+                onChange={(v) => setKind(v as ProviderKind)}
+                className="w-full"
+                options={[
+                  { value: 'cloud', label: '云端 API' },
+                  { value: 'local', label: '本地部署' },
+                ]}
+              />
             </div>
             <div className="sm:col-span-2">
               <label className="mb-1.5 block text-xs font-medium text-ink-secondary">Base URL</label>

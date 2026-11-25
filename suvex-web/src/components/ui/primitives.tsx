@@ -1,5 +1,15 @@
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, TextareaHTMLAttributes } from 'react'
-import { Loader2, X } from 'lucide-react'
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ButtonHTMLAttributes,
+  type InputHTMLAttributes,
+  type ReactNode,
+  type TextareaHTMLAttributes,
+} from 'react'
+import { createPortal } from 'react-dom'
+import { Check, ChevronDown, Loader2, X } from 'lucide-react'
 import { cn } from '@/lib/cn'
 
 /* Button */
@@ -116,6 +126,245 @@ export function Textarea({ className, ...props }: TextareaHTMLAttributes<HTMLTex
       )}
       {...props}
     />
+  )
+}
+
+/* Unified Editorial Select (Portal-backed, zero OS-native visual mismatch) */
+export interface SelectOption {
+  value: string
+  label: string
+  description?: string
+  badge?: string
+  disabled?: boolean
+}
+
+export interface SelectProps {
+  value: string
+  onChange: (value: string) => void
+  options: SelectOption[]
+  placeholder?: string
+  icon?: ReactNode
+  size?: 'sm' | 'md'
+  variant?: 'surface' | 'subtle'
+  align?: 'left' | 'right'
+  className?: string
+  menuClassName?: string
+  title?: string
+  disabled?: boolean
+}
+
+export function Select({
+  value,
+  onChange,
+  options,
+  placeholder = '请选择',
+  icon,
+  size = 'md',
+  variant = 'surface',
+  align = 'left',
+  className,
+  menuClassName,
+  title,
+  disabled = false,
+}: SelectProps) {
+  const [open, setOpen] = useState(false)
+  const [activeIndex, setActiveIndex] = useState(-1)
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const menuRef = useRef<HTMLDivElement | null>(null)
+  const [pos, setPos] = useState<{ top: number; left: number; minWidth: number; maxHeight: number }>({
+    top: 0,
+    left: 0,
+    minWidth: 160,
+    maxHeight: 280,
+  })
+
+  const selected = options.find((opt) => opt.value === value) || null
+
+  const updatePosition = () => {
+    const el = triggerRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const gap = 6
+    const estimatedHeight = Math.min(300, Math.max(88, options.length * 36 + 12))
+    const spaceBelow = window.innerHeight - rect.bottom - 12
+    const spaceAbove = rect.top - 12
+    const openUpward = spaceBelow < Math.min(estimatedHeight, 180) && spaceAbove > spaceBelow
+    const maxHeight = Math.max(120, Math.min(300, openUpward ? spaceAbove - gap : spaceBelow - gap))
+    const minWidth = Math.max(rect.width, 168)
+    let left = align === 'right' ? rect.right - minWidth : rect.left
+    left = Math.max(8, Math.min(left, window.innerWidth - minWidth - 8))
+    const top = openUpward
+      ? Math.max(8, rect.top - gap - Math.min(estimatedHeight, maxHeight))
+      : rect.bottom + gap
+    setPos({ top, left, minWidth, maxHeight })
+  }
+
+  useLayoutEffect(() => {
+    if (!open) return
+    updatePosition()
+    const idx = options.findIndex((o) => o.value === value && !o.disabled)
+    setActiveIndex(idx >= 0 ? idx : 0)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, options.length, align])
+
+  useEffect(() => {
+    if (!open) return
+    const onPointerDown = (e: MouseEvent) => {
+      const target = e.target as Node
+      if (triggerRef.current?.contains(target) || menuRef.current?.contains(target)) return
+      setOpen(false)
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setOpen(false)
+        triggerRef.current?.focus()
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setActiveIndex((prev) => {
+          for (let step = 1; step <= options.length; step++) {
+            const next = (prev + step) % options.length
+            if (!options[next]?.disabled) return next
+          }
+          return prev
+        })
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setActiveIndex((prev) => {
+          for (let step = 1; step <= options.length; step++) {
+            const next = (prev - step + options.length) % options.length
+            if (!options[next]?.disabled) return next
+          }
+          return prev
+        })
+      } else if (e.key === 'Enter') {
+        if (activeIndex >= 0 && options[activeIndex] && !options[activeIndex].disabled) {
+          e.preventDefault()
+          onChange(options[activeIndex].value)
+          setOpen(false)
+        }
+      }
+    }
+    const onReposition = () => updatePosition()
+    document.addEventListener('mousedown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    window.addEventListener('resize', onReposition)
+    window.addEventListener('scroll', onReposition, true)
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('resize', onReposition)
+      window.removeEventListener('scroll', onReposition, true)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, activeIndex, options, onChange])
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        role="combobox"
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        disabled={disabled}
+        title={title}
+        onClick={() => setOpen((v) => !v)}
+        className={cn(
+          'inline-flex items-center justify-between gap-2 rounded-lg border text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/25 disabled:pointer-events-none disabled:opacity-55',
+          size === 'sm' ? 'h-8 px-2.5 text-xs' : 'h-9 px-3 text-xs',
+          variant === 'subtle'
+            ? 'border-line bg-subtle text-ink hover:border-line-strong'
+            : 'border-line bg-surface text-ink shadow-editorial hover:border-line-strong',
+          open && 'border-accent ring-2 ring-accent/15',
+          className,
+        )}
+      >
+        <span className="flex min-w-0 items-center gap-1.5">
+          {icon && <span className="shrink-0">{icon}</span>}
+          <span className={cn('truncate', !selected && 'text-ink-muted')}>
+            {selected ? selected.label : placeholder}
+          </span>
+        </span>
+        <ChevronDown
+          className={cn(
+            'h-3.5 w-3.5 shrink-0 text-ink-muted transition-transform duration-150',
+            open && 'rotate-180 text-ink',
+          )}
+        />
+      </button>
+
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            role="listbox"
+            style={{
+              position: 'fixed',
+              top: pos.top,
+              left: pos.left,
+              minWidth: pos.minWidth,
+              maxWidth: 'min(340px, calc(100vw - 16px))',
+              maxHeight: pos.maxHeight,
+            }}
+            className={cn(
+              'z-[80] overflow-y-auto rounded-xl border border-line bg-surface p-1 text-xs shadow-dialog backdrop-blur',
+              menuClassName,
+            )}
+          >
+            {options.length === 0 ? (
+              <div className="px-3 py-2 text-center text-[11px] text-ink-muted">暂无可选项</div>
+            ) : (
+              options.map((opt, idx) => {
+                const isSelected = opt.value === value
+                const isActive = idx === activeIndex
+                return (
+                  <button
+                    key={`${opt.value}-${idx}`}
+                    type="button"
+                    role="option"
+                    aria-selected={isSelected}
+                    disabled={opt.disabled}
+                    onMouseEnter={() => setActiveIndex(idx)}
+                    onClick={() => {
+                      if (opt.disabled) return
+                      onChange(opt.value)
+                      setOpen(false)
+                    }}
+                    className={cn(
+                      'flex w-full items-center justify-between gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors',
+                      opt.disabled && 'cursor-not-allowed opacity-45',
+                      isSelected
+                        ? 'bg-accent-soft text-accent-ink font-medium'
+                        : isActive
+                          ? 'bg-wash text-ink'
+                          : 'text-ink-secondary hover:bg-wash/70 hover:text-ink',
+                    )}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate">{opt.label}</span>
+                        {opt.badge && (
+                          <span className="shrink-0 rounded bg-subtle px-1.5 py-0.5 font-mono text-[10px] text-ink-muted">
+                            {opt.badge}
+                          </span>
+                        )}
+                      </div>
+                      {opt.description && (
+                        <p className="mt-0.5 truncate text-[10px] font-normal text-ink-muted">
+                          {opt.description}
+                        </p>
+                      )}
+                    </div>
+                    {isSelected && <Check className="h-3.5 w-3.5 shrink-0 text-accent" />}
+                  </button>
+                )
+              })
+            )}
+          </div>,
+          document.body,
+        )}
+    </>
   )
 }
 

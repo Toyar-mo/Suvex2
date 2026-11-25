@@ -41,6 +41,7 @@ import {
   Input,
   Modal,
   PageHeader,
+  Select,
   Skeleton,
 } from '@/components/ui/primitives'
 import { MarkdownView } from '@/components/ui/MarkdownView'
@@ -548,20 +549,23 @@ export function CtfPage() {
       <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex flex-wrap items-center gap-2">
           {competitions.length > 0 && (
-            <select
+            <Select
               value={selectedCompId}
-              onChange={(e) => setSelectedCompId(e.target.value)}
-              className="h-9 rounded-lg border border-line bg-surface px-3 text-xs font-medium text-ink focus:border-accent focus:outline-none"
-            >
-              <option value="">
-                全部题场/赛事 ({competitions.reduce((acc, c) => acc + c.challengeCount, 0)} 题)
-              </option>
-              {competitions.map((comp) => (
-                <option key={comp.id} value={comp.id}>
-                  {comp.name} ({comp.challengeCount} 题)
-                </option>
-              ))}
-            </select>
+              onChange={setSelectedCompId}
+              className="min-w-[180px]"
+              options={[
+                {
+                  value: '',
+                  label: '全部题场/赛事',
+                  badge: `${competitions.reduce((acc, c) => acc + c.challengeCount, 0)} 题`,
+                },
+                ...competitions.map((comp) => ({
+                  value: comp.id,
+                  label: comp.name,
+                  badge: `${comp.challengeCount} 题`,
+                })),
+              ]}
+            />
           )}
 
           <div className="flex flex-wrap items-center gap-1">
@@ -594,17 +598,19 @@ export function CtfPage() {
             ))}
           </div>
 
-          <select
+          <Select
+            size="sm"
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="h-8 rounded-lg border border-line bg-surface px-2.5 text-xs text-ink-secondary focus:border-accent focus:outline-none"
-          >
-            <option value="">全部状态</option>
-            <option value="unsolved">未解出</option>
-            <option value="solving">解题中</option>
-            <option value="candidate_ready">待交 Flag</option>
-            <option value="solved">已解出</option>
-          </select>
+            onChange={setStatusFilter}
+            className="min-w-[112px]"
+            options={[
+              { value: '', label: '全部状态' },
+              { value: 'unsolved', label: '未解出' },
+              { value: 'solving', label: '解题中' },
+              { value: 'candidate_ready', label: '待交 Flag' },
+              { value: 'solved', label: '已解出' },
+            ]}
+          />
         </div>
 
         <form onSubmit={handlePullSingle} className="flex items-center gap-2">

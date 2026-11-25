@@ -12,6 +12,7 @@ import {
   Input,
   Modal,
   PageHeader,
+  Select,
   Skeleton,
 } from '@/components/ui/primitives'
 
@@ -238,16 +239,17 @@ export function CredentialsPage() {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="mb-1.5 block text-xs font-medium text-ink-secondary">类型</label>
-              <select
+              <Select
                 value={kind}
-                onChange={(e) => setKind(e.target.value)}
-                className="h-9 w-full rounded-lg border border-line bg-surface px-3 text-xs text-ink"
-              >
-                <option value="password">Password</option>
-                <option value="token">API Token / JWT</option>
-                <option value="ssh_key">SSH Key</option>
-                <option value="cookie">Session Cookie</option>
-              </select>
+                onChange={setKind}
+                className="w-full"
+                options={[
+                  { value: 'password', label: 'Password' },
+                  { value: 'token', label: 'API Token / JWT' },
+                  { value: 'ssh_key', label: 'SSH Key' },
+                  { value: 'cookie', label: 'Session Cookie' },
+                ]}
+              />
             </div>
             <div>
               <label className="mb-1.5 block text-xs font-medium text-ink-secondary">用户名</label>

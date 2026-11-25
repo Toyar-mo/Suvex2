@@ -12,6 +12,7 @@ import {
   Input,
   Modal,
   PageHeader,
+  Select,
   Skeleton,
   Textarea,
 } from '@/components/ui/primitives'
@@ -198,27 +199,29 @@ export function IntranetPage() {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="mb-1.5 block text-xs font-medium text-ink-secondary">通道类型</label>
-              <select
+              <Select
                 value={kind}
-                onChange={(e) => setKind(e.target.value as IntranetKind)}
-                className="h-9 w-full rounded-lg border border-line bg-surface px-3 text-xs text-ink"
-              >
-                <option value="ssh">SSH</option>
-                <option value="webshell">Webshell</option>
-                <option value="reverse">反弹 Shell</option>
-              </select>
+                onChange={(v) => setKind(v as IntranetKind)}
+                className="w-full"
+                options={[
+                  { value: 'ssh', label: 'SSH' },
+                  { value: 'webshell', label: 'Webshell' },
+                  { value: 'reverse', label: '反弹 Shell' },
+                ]}
+              />
             </div>
             <div>
               <label className="mb-1.5 block text-xs font-medium text-ink-secondary">初始状态</label>
-              <select
+              <Select
                 value={status}
-                onChange={(e) => setStatus(e.target.value as IntranetStatus)}
-                className="h-9 w-full rounded-lg border border-line bg-surface px-3 text-xs text-ink"
-              >
-                <option value="alive">存活</option>
-                <option value="unknown">未知</option>
-                <option value="dead">已失效</option>
-              </select>
+                onChange={(v) => setStatus(v as IntranetStatus)}
+                className="w-full"
+                options={[
+                  { value: 'alive', label: '存活' },
+                  { value: 'unknown', label: '未知' },
+                  { value: 'dead', label: '已失效' },
+                ]}
+              />
             </div>
           </div>
 

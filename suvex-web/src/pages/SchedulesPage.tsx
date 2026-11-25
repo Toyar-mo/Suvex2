@@ -28,6 +28,7 @@ import {
   Input,
   Modal,
   PageHeader,
+  Select,
   Skeleton,
   Textarea,
 } from '@/components/ui/primitives'
@@ -259,17 +260,15 @@ export function SchedulesPage() {
             </div>
             <div>
               <label className="mb-1.5 block text-xs font-medium text-ink-secondary">目标形态</label>
-              <select
+              <Select
                 value={targetKind}
-                onChange={(e) => setTargetKind(e.target.value as TargetKind)}
-                className="h-9 w-full rounded-lg border border-line bg-surface px-3 text-xs text-ink"
-              >
-                {TARGET_KINDS.filter((k) => k.id !== 'artifact').map((k) => (
-                  <option key={k.id} value={k.id}>
-                    {k.label}
-                  </option>
-                ))}
-              </select>
+                onChange={(v) => setTargetKind(v as TargetKind)}
+                className="w-full"
+                options={TARGET_KINDS.filter((k) => k.id !== 'artifact').map((k) => ({
+                  value: k.id,
+                  label: k.label,
+                }))}
+              />
             </div>
           </div>
 
@@ -286,43 +285,43 @@ export function SchedulesPage() {
           <div className="grid grid-cols-3 gap-3">
             <div>
               <label className="mb-1.5 block text-xs font-medium text-ink-secondary">成功判据</label>
-              <select
+              <Select
                 value={goal}
-                onChange={(e) => setGoal(e.target.value as ScanGoal)}
-                className="h-9 w-full rounded-lg border border-line bg-surface px-3 text-xs text-ink"
-              >
-                <option value="findVulns">渗透评估</option>
-                <option value="verifyFix">修复复测</option>
-              </select>
+                onChange={(v) => setGoal(v as ScanGoal)}
+                className="w-full"
+                options={[
+                  { value: 'findVulns', label: '渗透评估' },
+                  { value: 'verifyFix', label: '修复复测' },
+                ]}
+              />
             </div>
             <div>
               <label className="mb-1.5 block text-xs font-medium text-ink-secondary">复查频率</label>
-              <select
-                value={intervalMinutes}
-                onChange={(e) => setIntervalMinutes(Number(e.target.value))}
-                className="h-9 w-full rounded-lg border border-line bg-surface px-3 text-xs text-ink"
-              >
-                {INTERVAL_PRESETS.map((p) => (
-                  <option key={p.minutes} value={p.minutes}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
+              <Select
+                value={String(intervalMinutes)}
+                onChange={(v) => setIntervalMinutes(Number(v))}
+                className="w-full"
+                options={INTERVAL_PRESETS.map((p) => ({
+                  value: String(p.minutes),
+                  label: p.label,
+                }))}
+              />
             </div>
             <div>
               <label className="mb-1.5 block text-xs font-medium text-ink-secondary">模型路由</label>
-              <select
+              <Select
                 value={providerId}
-                onChange={(e) => setProviderId(e.target.value)}
-                className="h-9 w-full rounded-lg border border-line bg-surface px-3 text-xs text-ink"
-              >
-                <option value="auto">默认模型</option>
-                {providers.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
+                onChange={setProviderId}
+                className="w-full"
+                options={[
+                  { value: 'auto', label: '默认模型' },
+                  ...providers.map((p) => ({
+                    value: p.id,
+                    label: p.label,
+                    description: p.model,
+                  })),
+                ]}
+              />
             </div>
           </div>
 
