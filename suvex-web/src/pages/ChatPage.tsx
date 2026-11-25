@@ -54,6 +54,7 @@ import type {
 } from '@/types/api'
 import { Badge, Button, Drawer, EmptyState, Modal, Select } from '@/components/ui/primitives'
 import { MarkdownView } from '@/components/ui/MarkdownView'
+import { ChallengeCockpit } from '@/components/chat/ChallengeCockpit'
 import { SessionRail } from '@/components/chat/SessionRail'
 import { SessionSettingsModal } from '@/components/chat/SessionSettingsModal'
 import { cn } from '@/lib/cn'
@@ -1142,8 +1143,8 @@ export function ChatPage() {
     }
   }
 
-  const handleSend = async () => {
-    const text = input.trim()
+  const handleSend = async (overrideText?: string) => {
+    const text = (overrideText ?? input).trim()
     if (!text) return
 
     let sid = activeId
@@ -1537,61 +1538,74 @@ export function ChatPage() {
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 加载会话记录…
               </div>
-            ) : !detail || displayBlocks.length === 0 ? (
-              <div className="py-10">
-                <EmptyState
-                  icon={<MessagesSquare className="h-5 w-5" />}
-                  title="向 Suvex 2 智能体下达安全任务"
-                  description="支持绑定自定义 Agent 角色画像与远程 HTTP MCP（如 ctf2-suvex），具备执行轨迹折叠、代码一键复制、分支 Fork 与攻击链可视化。"
-                  action={
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      {[
-                        '帮我检查当前平台的沙箱、模型与已挂载 MCP 工具状态',
-                        '列出 CTF2 练习场里可做的 Web/Pwn 题目并开始解题',
-                        '总结最近一次扫描中已确证的高危漏洞与修复建议',
-                        '分析一份 Web 登录接口可能存在的认证绕过攻击面',
-                      ].map((prompt) => (
-                        <button
-                          key={prompt}
-                          type="button"
-                          onClick={() => setInput(prompt)}
-                          className="rounded-xl border border-line bg-surface px-3.5 py-2.5 text-left text-xs text-ink-secondary shadow-editorial transition-colors hover:border-accent/50 hover:text-ink"
-                        >
-                          {prompt}
-                        </button>
-                      ))}
-                    </div>
-                  }
-                />
-              </div>
             ) : (
-              displayBlocks.map((block) => {
-                if (block.kind === 'user') {
-                  return (
-                    <UserMessageBlock
-                      key={block.msg.id}
-                      msg={block.msg}
-                      onFork={(seq) => void handleFork(seq)}
-                    />
-                  )
-                }
-                if (block.kind === 'trace') {
-                  return (
-                    <ExecutionTraceGroup
-                      key={block.id}
-                      items={block.items}
-                      onApprove={handleApprove}
-                    />
-                  )
-                }
-                return (
-                  <AssistantMessageBlock
-                    key={block.msg.id}
-                    msg={block.msg}
-                    onFork={(seq) => void handleFork(seq)}
+              <>
+                {detail?.challenge && (
+                  <ChallengeCockpit
+                    challengeRef={detail.challenge}
+                    hasChatMessages={displayBlocks.length > 0}
+                    onQuickPrompt={(prompt) => void handleSend(prompt)}
+                    onRefreshSession={() => (activeId ? loadDetail(activeId) : Promise.resolve())}
                   />
-                )
-              })
+                )}
+
+                {(!detail || displayBlocks.length === 0) && !detail?.challenge ? (
+                  <div className="py-10">
+                    <EmptyState
+                      icon={<MessagesSquare className="h-5 w-5" />}
+                      title="向 Suvex 2 智能体下达安全任务"
+                      description="支持绑定自定义 Agent 角色画像与远程 HTTP MCP（如 ctf2-suvex），具备执行轨迹折叠、代码一键复制、分支 Fork 与攻击链可视化。"
+                      action={
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          {[
+                            '帮我检查当前平台的沙箱、模型与已挂载 MCP 工具状态',
+                            '列出 CTF2 练习场里可做的 Web/Pwn 题目并开始解题',
+                            '总结最近一次扫描中已确证的高危漏洞与修复建议',
+                            '分析一份 Web 登录接口可能存在的认证绕过攻击面',
+                          ].map((prompt) => (
+                            <button
+                              key={prompt}
+                              type="button"
+                              onClick={() => setInput(prompt)}
+                              className="rounded-xl border border-line bg-surface px-3.5 py-2.5 text-left text-xs text-ink-secondary shadow-editorial transition-colors hover:border-accent/50 hover:text-ink"
+                            >
+                              {prompt}
+                            </button>
+                          ))}
+                        </div>
+                      }
+                    />
+                  </div>
+                ) : (
+                  displayBlocks.map((block) => {
+                    if (block.kind === 'user') {
+                      return (
+                        <UserMessageBlock
+                          key={block.msg.id}
+                          msg={block.msg}
+                          onFork={(seq) => void handleFork(seq)}
+                        />
+                      )
+                    }
+                    if (block.kind === 'trace') {
+                      return (
+                        <ExecutionTraceGroup
+                          key={block.id}
+                          items={block.items}
+                          onApprove={handleApprove}
+                        />
+                      )
+                    }
+                    return (
+                      <AssistantMessageBlock
+                        key={block.msg.id}
+                        msg={block.msg}
+                        onFork={(seq) => void handleFork(seq)}
+                      />
+                    )
+                  })
+                )}
+              </>
             )}
 
             {/* Live Streaming / Reattached Turn Card */}

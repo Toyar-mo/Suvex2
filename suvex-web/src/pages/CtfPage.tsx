@@ -143,13 +143,33 @@ export function CtfPage() {
     [mcpServers],
   )
 
+  const CANONICAL_LABELS: Record<string, string> = {
+    web: 'Web',
+    pwn: 'Pwn',
+    reverse: 'Reverse',
+    crypto: 'Crypto',
+    misc: 'Misc',
+    ir: '应急响应',
+    other: '其他',
+  }
+
   const categories = useMemo(() => {
-    return Array.from(new Set(challenges.map((c) => c.category).filter(Boolean))).sort()
+    const counts = new Map<string, number>()
+    for (const c of challenges) {
+      const key = (c.canonicalCategory || 'other').toLowerCase()
+      counts.set(key, (counts.get(key) || 0) + 1)
+    }
+    const order = ['web', 'pwn', 'reverse', 'crypto', 'misc', 'ir', 'other']
+    return order
+      .filter((k) => (counts.get(k) || 0) > 0)
+      .map((k) => ({ id: k, label: CANONICAL_LABELS[k] || k, count: counts.get(k) || 0 }))
   }, [challenges])
 
   const filtered = useMemo(() => {
     return challenges.filter((c) => {
-      if (categoryFilter && c.category !== categoryFilter) return false
+      if (categoryFilter && (c.canonicalCategory || 'other').toLowerCase() !== categoryFilter) {
+        return false
+      }
       if (statusFilter && c.status !== statusFilter) return false
       return true
     })
@@ -583,17 +603,18 @@ export function CtfPage() {
             </button>
             {categories.map((cat) => (
               <button
-                key={cat}
+                key={cat.id}
                 type="button"
-                onClick={() => setCategoryFilter(categoryFilter === cat ? '' : cat)}
+                onClick={() => setCategoryFilter(categoryFilter === cat.id ? '' : cat.id)}
                 className={cn(
                   'rounded-lg px-2.5 py-1.5 text-xs font-medium',
-                  categoryFilter === cat
+                  categoryFilter === cat.id
                     ? 'bg-ink text-canvas'
                     : 'border border-line bg-surface text-ink-secondary hover:bg-subtle',
                 )}
               >
-                {cat}
+                {cat.label}
+                <span className="ml-1 font-mono text-[10px] opacity-70">{cat.count}</span>
               </button>
             ))}
           </div>

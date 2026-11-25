@@ -441,6 +441,7 @@ export interface KernelChallengeOut {
   stageId: string | null
   title: string
   category: string
+  canonicalCategory?: string
   description: string | null
   attachments: Array<{ name?: string; url?: string; sizeBytes?: number }>
   attachmentsReady: boolean

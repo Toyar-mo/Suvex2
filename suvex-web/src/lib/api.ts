@@ -511,6 +511,8 @@ export const api = {
   getRemoteCompetitions: () => request<KernelRemoteCompetitionOut[]>('/kernel/competitions/remote'),
   getKernelChallenges: (params?: { competitionId?: string; status?: string }) =>
     request<KernelChallengeOut[]>(`/kernel/challenges${qs(params || {})}`),
+  getKernelChallenge: (challengeId: string) =>
+    request<KernelChallengeOut>(`/kernel/challenges/${encodeURIComponent(challengeId)}`),
   getKernelQueue: () => request<KernelQueueOut>('/kernel/queue'),
   syncKernel: (competitionIds: string[] = []) =>
     request<{
