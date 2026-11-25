@@ -85,6 +85,27 @@
     background: var(--accent-soft);
     color: var(--accent-ink);
   }
+
+  /* Fix Windows Chromium/Edge native <select> popup white-on-white in dark mode */
+  select {
+    color-scheme: light;
+  }
+  [data-theme='dark'] select,
+  .dark select {
+    color-scheme: dark;
+  }
+  select option,
+  select optgroup {
+    background-color: #ffffff;
+    color: #141413;
+  }
+  [data-theme='dark'] select option,
+  [data-theme='dark'] select optgroup,
+  .dark select option,
+  .dark select optgroup {
+    background-color: #15161c;
+    color: #f2f2f5;
+  }
 }
 
 .tabular-nums {
