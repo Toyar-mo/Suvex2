@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { useTheme } from '@/lib/theme'
+import { prefetchRoute } from '@/lib/routePreload'
 import { BrandMark } from '@/components/layout/AppShell'
 import { Badge, Button } from '@/components/ui/primitives'
 import {
@@ -326,13 +327,13 @@ export function LandingPage() {
             )}
             <button
               type="button"
-              onClick={toggleTheme}
-              className="rounded-lg border border-line bg-surface/80 p-2 text-ink-secondary backdrop-blur transition-colors hover:border-line-strong hover:text-ink"
+              onClick={(e) => toggleTheme(e)}
+              className="rounded-lg border border-line bg-surface/80 p-2 text-ink-secondary backdrop-blur transition-all hover:border-line-strong hover:text-ink active:scale-90"
               aria-label="切换明暗主题"
             >
               {theme === 'light' ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
             </button>
-            <Link to={entryPath}>
+            <Link to={entryPath} onMouseEnter={() => prefetchRoute(entryPath)}>
               <Button variant="primary" size="md">
                 {entryLabel}
                 <ArrowRight className="h-3.5 w-3.5" />

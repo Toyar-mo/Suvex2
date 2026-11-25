@@ -8,6 +8,7 @@ interface ToastItem {
   id: string
   message: string
   tone: ToastTone
+  closing?: boolean
 }
 
 interface ToastContextValue {
@@ -20,7 +21,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<ToastItem[]>([])
 
   const dismiss = useCallback((id: string) => {
-    setItems((prev) => prev.filter((item) => item.id !== id))
+    setItems((prev) => prev.map((item) => (item.id === id ? { ...item, closing: true } : item)))
+    window.setTimeout(() => {
+      setItems((prev) => prev.filter((item) => item.id !== id))
+    }, 200)
   }, [])
 
   const push = useCallback(
@@ -41,7 +45,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             key={item.id}
             role="status"
             className={cn(
-              'pointer-events-auto flex items-start gap-2.5 rounded-editorial border bg-surface px-3.5 py-2.5 text-sm shadow-elevated transition-all',
+              'pointer-events-auto relative flex items-start gap-2.5 overflow-hidden rounded-xl border bg-surface/95 px-3.5 py-2.5 text-sm shadow-elevated backdrop-blur',
+              item.closing ? 'suvex-toast-out' : 'suvex-toast-in',
               item.tone === 'error'
                 ? 'border-red-300 text-red-800 dark:border-red-900 dark:text-red-300'
                 : item.tone === 'success'
@@ -60,11 +65,22 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             <button
               type="button"
               onClick={() => dismiss(item.id)}
-              className="rounded p-0.5 text-ink-muted hover:bg-wash hover:text-ink"
+              className="rounded p-0.5 text-ink-muted transition-colors hover:bg-wash hover:text-ink active:scale-90"
               aria-label="关闭通知"
             >
               <X className="h-3.5 w-3.5" />
             </button>
+            <span
+              aria-hidden="true"
+              className={cn(
+                'suvex-toast-bar absolute bottom-0 left-0 right-0 h-[2px] opacity-65',
+                item.tone === 'error'
+                  ? 'bg-red-500'
+                  : item.tone === 'success'
+                    ? 'bg-emerald-500'
+                    : 'bg-accent',
+              )}
+            />
           </div>
         ))}
       </div>

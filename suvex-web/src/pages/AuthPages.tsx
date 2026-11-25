@@ -41,8 +41,8 @@ function AuthCanvas({
         </Link>
         <button
           type="button"
-          onClick={toggleTheme}
-          className="rounded-lg border border-line bg-surface/80 p-2 text-ink-secondary backdrop-blur transition-colors hover:border-line-strong hover:text-ink"
+          onClick={(e) => toggleTheme(e)}
+          className="rounded-lg border border-line bg-surface/80 p-2 text-ink-secondary backdrop-blur transition-all hover:border-line-strong hover:text-ink active:scale-90"
           aria-label="切换主题"
         >
           {theme === 'light' ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}

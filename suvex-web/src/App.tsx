@@ -1,9 +1,10 @@
-import { Suspense, lazy } from 'react'
+import { Suspense, lazy, useEffect } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { Loader2 } from 'lucide-react'
 import { AuthProvider, useAuth } from '@/lib/auth'
 import { ThemeProvider } from '@/lib/theme'
 import { ToastProvider } from '@/lib/toast'
+import { prefetchCoreRoutesOnIdle } from '@/lib/routePreload'
 import { AppShell } from '@/components/layout/AppShell'
 import { LandingPage } from '@/pages/LandingPage'
 import { LoginPage, SetupPage } from '@/pages/AuthPages'
@@ -68,6 +69,10 @@ function RouteFallback() {
 
 function ProtectedShell() {
   const { loading, initialized, user } = useAuth()
+
+  useEffect(() => {
+    if (user) prefetchCoreRoutesOnIdle()
+  }, [user])
 
   if (loading) {
     return (

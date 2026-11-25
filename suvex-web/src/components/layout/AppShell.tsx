@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   LogOut,
@@ -13,6 +13,7 @@ import {
 import { NAV_GROUPS, NAV_ITEMS, isNavActive } from '@/navigation'
 import { useAuth } from '@/lib/auth'
 import { useTheme } from '@/lib/theme'
+import { prefetchRoute } from '@/lib/routePreload'
 import { cn } from '@/lib/cn'
 import { CommandPalette } from '@/components/layout/CommandPalette'
 import { ModuleTactileIcon, SuvexAppIcon } from '@/components/ui/AppIcons'
@@ -43,13 +44,41 @@ export function AppShell({ children }: { children?: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [cmdOpen, setCmdOpen] = useState(false)
+  const navRef = useRef<HTMLElement | null>(null)
+  const [indicator, setIndicator] = useState<{ top: number; height: number; visible: boolean }>({
+    top: 0,
+    height: 0,
+    visible: false,
+  })
 
   const currentNav = NAV_ITEMS.find((item) => isNavActive(item, pathname))
   const fillsViewport = Boolean(currentNav?.fillsViewport)
 
   useEffect(() => {
     setMobileOpen(false)
-  }, [pathname])
+    if (!fillsViewport && typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'auto' })
+    }
+  }, [pathname, fillsViewport])
+
+  // Smoothly glide the desktop sidebar active indicator bar to the newly active item
+  useLayoutEffect(() => {
+    const navEl = navRef.current
+    if (!navEl || collapsed) {
+      setIndicator((prev) => (prev.visible ? { ...prev, visible: false } : prev))
+      return
+    }
+    const activeEl = navEl.querySelector<HTMLElement>('[data-nav-active="true"]')
+    if (!activeEl) {
+      setIndicator((prev) => (prev.visible ? { ...prev, visible: false } : prev))
+      return
+    }
+    setIndicator({
+      top: activeEl.offsetTop + 6,
+      height: Math.max(16, activeEl.offsetHeight - 12),
+      visible: true,
+    })
+  }, [pathname, collapsed])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -127,7 +156,22 @@ export function AppShell({ children }: { children?: ReactNode }) {
         </div>
 
         {/* Nav Groups */}
-        <nav className="flex-1 space-y-5 overflow-y-auto px-3 py-4">
+        <nav
+          ref={!isMobile ? navRef : undefined}
+          className="relative flex-1 space-y-5 overflow-y-auto px-3 py-4"
+        >
+          {/* Gliding Spring Active Indicator (Desktop Expanded) */}
+          {!isMobile && !isCompact && (
+            <span
+              aria-hidden="true"
+              style={{
+                transform: `translate3d(0, ${indicator.top}px, 0)`,
+                height: `${indicator.height}px`,
+                opacity: indicator.visible ? 1 : 0,
+              }}
+              className="pointer-events-none absolute left-3 top-0 z-10 w-[3px] rounded-full bg-accent shadow-[0_0_8px_rgba(79,70,229,0.5)] transition-[transform,height,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]"
+            />
+          )}
           {NAV_GROUPS.map((group) => {
             const items = NAV_ITEMS.filter((i) => i.group === group.id)
             return (
@@ -145,17 +189,20 @@ export function AppShell({ children }: { children?: ReactNode }) {
                       <Link
                         key={item.id}
                         to={item.path}
+                        data-nav-active={active ? 'true' : undefined}
+                        onMouseEnter={() => prefetchRoute(item.path)}
+                        onFocus={() => prefetchRoute(item.path)}
                         title={isCompact ? item.label : undefined}
                         className={cn(
-                          'group relative flex items-center gap-2.5 rounded-lg text-[13px] font-medium transition-all duration-150',
+                          'group relative flex items-center gap-2.5 rounded-lg text-[13px] font-medium transition-all duration-150 active:scale-[0.985]',
                           isCompact ? 'justify-center p-2' : 'px-2.5 py-1.5',
                           active
                             ? 'bg-surface text-ink shadow-editorial ring-1 ring-accent/25 dark:ring-line'
-                            : 'text-ink-secondary hover:translate-x-[1px] hover:bg-wash/75 hover:text-ink',
+                            : 'text-ink-secondary hover:translate-x-[2px] hover:bg-wash/75 hover:text-ink',
                         )}
                       >
-                        {active && !isCompact && (
-                          <span className="absolute left-0 top-1.5 bottom-1.5 w-[2.5px] rounded-full bg-accent" />
+                        {active && isMobile && (
+                          <span className="absolute bottom-1.5 left-0 top-1.5 w-[2.5px] rounded-full bg-accent" />
                         )}
                         {active ? (
                           <ModuleTactileIcon moduleId={item.id} icon={Icon} size="xs" />
@@ -181,15 +228,15 @@ export function AppShell({ children }: { children?: ReactNode }) {
               <button
                 type="button"
                 onClick={() => setCollapsed(false)}
-                className="rounded-lg p-2 text-ink-muted hover:bg-wash hover:text-ink"
+                className="rounded-lg p-2 text-ink-muted transition-colors hover:bg-wash hover:text-ink active:scale-95"
                 title="展开侧栏"
               >
                 <PanelLeftOpen className="h-4 w-4" />
               </button>
               <button
                 type="button"
-                onClick={toggleTheme}
-                className="rounded-lg p-2 text-ink-muted hover:bg-wash hover:text-ink"
+                onClick={(e) => toggleTheme(e)}
+                className="rounded-lg p-2 text-ink-muted transition-colors hover:bg-wash hover:text-ink active:scale-95"
                 title="切换明暗主题"
               >
                 {theme === 'light' ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
@@ -209,8 +256,8 @@ export function AppShell({ children }: { children?: ReactNode }) {
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
-                    onClick={toggleTheme}
-                    className="rounded-md p-1.5 text-ink-muted hover:bg-wash hover:text-ink"
+                    onClick={(e) => toggleTheme(e)}
+                    className="rounded-md p-1.5 text-ink-muted transition-all hover:bg-wash hover:text-ink active:scale-90"
                     title={theme === 'light' ? '切换深色模式' : '切换浅色模式'}
                   >
                     {theme === 'light' ? (
@@ -222,7 +269,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
                   <button
                     type="button"
                     onClick={handleLogout}
-                    className="rounded-md p-1.5 text-ink-muted hover:bg-wash hover:text-red-600"
+                    className="rounded-md p-1.5 text-ink-muted transition-all hover:bg-wash hover:text-red-600 active:scale-90"
                     title="退出登录"
                   >
                     <LogOut className="h-3.5 w-3.5" />
@@ -257,8 +304,11 @@ export function AppShell({ children }: { children?: ReactNode }) {
       {/* Mobile Drawer Sidebar */}
       {mobileOpen && (
         <div className="fixed inset-0 z-50 flex md:hidden">
-          <div className="fixed inset-0 bg-black/35" onClick={() => setMobileOpen(false)} />
-          <aside className="relative z-10 h-full w-64 border-r border-line shadow-dialog">
+          <div
+            className="suvex-backdrop-in fixed inset-0 bg-black/35 backdrop-blur-[2px]"
+            onClick={() => setMobileOpen(false)}
+          />
+          <aside className="suvex-drawer-left-in relative z-10 h-full w-64 border-r border-line shadow-dialog">
             {sidebarContent(true)}
           </aside>
         </div>
@@ -277,7 +327,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
             <button
               type="button"
               onClick={() => setMobileOpen(true)}
-              className="rounded-lg p-1.5 text-ink-secondary hover:bg-wash"
+              className="rounded-lg p-1.5 text-ink-secondary hover:bg-wash active:scale-95"
               aria-label="打开菜单"
             >
               <Menu className="h-4 w-4" />
@@ -288,15 +338,15 @@ export function AppShell({ children }: { children?: ReactNode }) {
             <button
               type="button"
               onClick={() => setCmdOpen(true)}
-              className="rounded-lg p-1.5 text-ink-secondary hover:bg-wash"
+              className="rounded-lg p-1.5 text-ink-secondary hover:bg-wash active:scale-95"
               aria-label="快速跳转"
             >
               <Search className="h-4 w-4" />
             </button>
             <button
               type="button"
-              onClick={toggleTheme}
-              className="rounded-lg p-1.5 text-ink-secondary hover:bg-wash"
+              onClick={(e) => toggleTheme(e)}
+              className="rounded-lg p-1.5 text-ink-secondary hover:bg-wash active:scale-95"
               aria-label="切换主题"
             >
               {theme === 'light' ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
@@ -313,7 +363,9 @@ export function AppShell({ children }: { children?: ReactNode }) {
           )}
         >
           {fillsViewport ? (
-            children ?? <Outlet />
+            <div key={pathname} className="page-fade flex h-full min-h-0 flex-1 flex-col">
+              {children ?? <Outlet />}
+            </div>
           ) : (
             <div key={pathname} className="page-enter">
               {children ?? <Outlet />}

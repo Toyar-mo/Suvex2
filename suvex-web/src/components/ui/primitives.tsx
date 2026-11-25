@@ -37,7 +37,7 @@ export function Button({
     <button
       disabled={disabled || loading}
       className={cn(
-        'inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:pointer-events-none disabled:opacity-50',
+        'inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition-all duration-150 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:pointer-events-none disabled:opacity-50',
         size === 'sm' && 'h-8 px-2.5 text-xs',
         size === 'md' && 'h-9 px-3.5 text-sm',
         size === 'lg' && 'h-10 px-4 text-sm',
@@ -324,7 +324,7 @@ export function Select({
               maxHeight: pos.maxHeight,
             }}
             className={cn(
-              'z-[80] overflow-y-auto rounded-xl border border-line bg-surface p-1 text-xs shadow-dialog backdrop-blur',
+              'suvex-popover-in z-[80] overflow-y-auto rounded-xl border border-line bg-surface p-1 text-xs shadow-dialog backdrop-blur',
               menuClassName,
             )}
           >
@@ -489,18 +489,27 @@ export function Drawer({
   widthClass?: string
   children: ReactNode
 }) {
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onClose])
+
   if (!open) return null
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       <div
-        className="fixed inset-0 bg-black/30 backdrop-blur-[2px] transition-opacity"
+        className="suvex-backdrop-in fixed inset-0 bg-black/35 backdrop-blur-[3px]"
         onClick={onClose}
       />
       <div
         role="dialog"
         aria-modal="true"
         className={cn(
-          'relative z-10 flex h-full w-full flex-col border-l border-line bg-canvas shadow-dialog',
+          'suvex-drawer-in relative z-10 flex h-full w-full flex-col border-l border-line bg-canvas shadow-dialog',
           widthClass,
         )}
       >
@@ -514,7 +523,7 @@ export function Drawer({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg p-1.5 text-ink-muted hover:bg-wash hover:text-ink"
+            className="rounded-lg p-1.5 text-ink-muted transition-colors hover:bg-wash hover:text-ink active:scale-90"
             aria-label="关闭抽屉"
           >
             <X className="h-4 w-4" />
@@ -541,18 +550,27 @@ export function Modal({
   children: ReactNode
   maxWidth?: string
 }) {
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onClose])
+
   if (!open) return null
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div
-        className="fixed inset-0 bg-black/35 backdrop-blur-[2px]"
+        className="suvex-backdrop-in fixed inset-0 bg-black/38 backdrop-blur-[3px]"
         onClick={onClose}
       />
       <div
         role="dialog"
         aria-modal="true"
         className={cn(
-          'relative z-10 w-full overflow-hidden rounded-xl border border-line bg-surface shadow-dialog',
+          'suvex-modal-in relative z-10 w-full overflow-hidden rounded-xl border border-line bg-surface shadow-dialog',
           maxWidth,
         )}
       >
@@ -564,7 +582,7 @@ export function Modal({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg p-1.5 text-ink-muted hover:bg-wash hover:text-ink"
+            className="rounded-lg p-1.5 text-ink-muted transition-colors hover:bg-wash hover:text-ink active:scale-90"
             aria-label="关闭弹窗"
           >
             <X className="h-4 w-4" />
