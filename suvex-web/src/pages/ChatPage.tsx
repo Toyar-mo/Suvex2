@@ -839,7 +839,7 @@ export function ChatPage() {
   const [slashIndex, setSlashIndex] = useState(0)
   const [attachments, setAttachments] = useState<ChatAttachmentOut[]>([])
   const [uploading, setUploading] = useState(false)
-  const [streaming, setStreaming] = useState(false)
+  const [streamingSessionId, setStreamingSessionId] = useState<string | null>(null)
   const [streamPhase, setStreamPhase] = useState<string | null>(null)
   const [streamRound, setStreamRound] = useState<number | null>(null)
   const [streamTool, setStreamTool] = useState<string | null>(null)
@@ -849,13 +849,16 @@ export function ChatPage() {
   const [streamReasoning, setStreamReasoning] = useState('')
   const [liveToolOut, setLiveToolOut] = useState('')
   const [loadingDetail, setLoadingDetail] = useState(false)
-  const [resuming, setResuming] = useState(false)
+  const [resumingSessionId, setResumingSessionId] = useState<string | null>(null)
   const [showScrollBottom, setShowScrollBottom] = useState(false)
 
-  const resumingRef = useRef(false)
-  useEffect(() => {
-    resumingRef.current = resuming
-  }, [resuming])
+  // Authoritative current-session refs & request epoch to eliminate cross-session race conditions
+  const activeIdRef = useRef<string | null>(activeId)
+  activeIdRef.current = activeId
+  const detailReqSeqRef = useRef(0)
+
+  const resumingSessionRef = useRef<string | null>(null)
+  resumingSessionRef.current = resumingSessionId
 
   const abortRef = useRef<AbortController | null>(null)
   const scrollAreaRef = useRef<HTMLDivElement | null>(null)
@@ -863,36 +866,52 @@ export function ChatPage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
-  // RAF-batched streaming accumulator (prevents 200+ React renders/sec on fast token streams)
-  const streamBufRef = useRef({ text: '', reasoning: '', toolOut: '' })
+  // RAF-batched streaming accumulator bound to a single sessionId (prevents 200+ renders/sec & cross-session bleed)
+  const streamBufRef = useRef<{ sessionId: string | null; text: string; reasoning: string; toolOut: string }>({
+    sessionId: null,
+    text: '',
+    reasoning: '',
+    toolOut: '',
+  })
   const streamRafRef = useRef<number | null>(null)
 
   const flushStreamBuf = useCallback(() => {
     streamRafRef.current = null
+    if (streamBufRef.current.sessionId !== activeIdRef.current) return
     setStreamText(streamBufRef.current.text)
     setStreamReasoning(streamBufRef.current.reasoning)
     setLiveToolOut(streamBufRef.current.toolOut)
   }, [])
 
-  const scheduleStreamFlush = useCallback(() => {
-    if (streamRafRef.current != null) return
-    streamRafRef.current = window.requestAnimationFrame(flushStreamBuf)
-  }, [flushStreamBuf])
+  const scheduleStreamFlush = useCallback(
+    (sessionId: string) => {
+      if (activeIdRef.current !== sessionId) return
+      streamBufRef.current.sessionId = sessionId
+      if (streamRafRef.current != null) return
+      streamRafRef.current = window.requestAnimationFrame(flushStreamBuf)
+    },
+    [flushStreamBuf],
+  )
 
-  const resetStreamBuffers = useCallback(() => {
+  const resetStreamBuffers = useCallback((sessionId: string | null = null) => {
     if (streamRafRef.current != null) {
       window.cancelAnimationFrame(streamRafRef.current)
       streamRafRef.current = null
     }
-    streamBufRef.current = { text: '', reasoning: '', toolOut: '' }
+    streamBufRef.current = { sessionId, text: '', reasoning: '', toolOut: '' }
     setStreamText('')
     setStreamReasoning('')
     setLiveToolOut('')
   }, [])
 
-  // Smooth live elapsed clock while streaming / reattached
+  const streaming = Boolean(activeId && streamingSessionId === activeId)
+  const resuming = Boolean(activeId && resumingSessionId === activeId)
+  // Strict session-scoped detail: NEVER render or inspect stale detail from a previously selected session
+  const currentDetail = detail && detail.id === activeId ? detail : null
+
+  // Smooth live elapsed clock while streaming / reattached (reset on session switch)
   useEffect(() => {
-    if (!streaming && !streamPhase) {
+    if (!activeId || (!streaming && !streamPhase)) {
       setStreamElapsedSec(0)
       return
     }
@@ -902,25 +921,29 @@ export function ChatPage() {
       setStreamElapsedSec((performance.now() - startedAt) / 1000)
     }, 200)
     return () => window.clearInterval(id)
-  }, [streaming, Boolean(streamPhase)])
+  }, [activeId, streaming, Boolean(streamPhase)])
 
   const loadSessions = useCallback(async () => {
     try {
       // 始终加载包含归档的完整清单，让「进行中 / 已归档」双标签计数实时准确
       const list = await api.listChatSessions(true)
       setSessions(list)
-      if (!activeId && searchParams.get('new') !== '1') {
+      if (!activeIdRef.current && searchParams.get('new') !== '1') {
         const firstActive = list.find((s) => !s.archived) || list[0]
-        if (firstActive) setActiveId(firstActive.id)
+        if (firstActive) {
+          activeIdRef.current = firstActive.id
+          setActiveId(firstActive.id)
+        }
       }
     } catch {
       // handled silently
     }
-  }, [activeId, searchParams])
+  }, [searchParams])
 
   const loadDetail = useCallback(
     async (id: string, opts?: { silent?: boolean }) => {
-      if (!opts?.silent) setLoadingDetail(true)
+      const reqSeq = ++detailReqSeqRef.current
+      if (!opts?.silent && activeIdRef.current === id) setLoadingDetail(true)
       try {
         const [d, ctx, tds, trns, fls] = await Promise.all([
           api.getChatSession(id, 180),
@@ -929,6 +952,8 @@ export function ChatPage() {
           api.getChatTurns(id).catch(() => []),
           api.listSessionFiles(id).catch(() => []),
         ])
+        // Discard stale responses if user already switched sessions or a newer load started
+        if (activeIdRef.current !== id || detailReqSeqRef.current !== reqSeq) return
         setDetail(d)
         setContextInfo(ctx)
         setTodos(tds)
@@ -937,11 +962,14 @@ export function ChatPage() {
         if (d.providerId) setSelectedProviderId(d.providerId)
         setSelectedProfileId(d.agentProfileId || '')
       } catch (err) {
+        if (activeIdRef.current !== id || detailReqSeqRef.current !== reqSeq) return
         if (!opts?.silent) {
           push(err instanceof ApiClientError ? err.message : '加载会话失败', 'error')
         }
       } finally {
-        if (!opts?.silent) setLoadingDetail(false)
+        if (activeIdRef.current === id && detailReqSeqRef.current === reqSeq && !opts?.silent) {
+          setLoadingDetail(false)
+        }
       }
     },
     [push],
@@ -963,12 +991,23 @@ export function ChatPage() {
       .catch(() => {})
   }, [loadSessions])
 
+  // Sync external URL ?session=... navigation cleanly into activeId
+  useEffect(() => {
+    const urlSession = searchParams.get('session')
+    if (urlSession && urlSession !== activeIdRef.current) {
+      activeIdRef.current = urlSession
+      setActiveId(urlSession)
+      setShowScrollBottom(false)
+    }
+  }, [searchParams])
+
   useEffect(() => {
     if (searchParams.get('new') === '1') {
       void (async () => {
         try {
           const created = await api.createChatSession({})
           setSessions((prev) => [created, ...prev])
+          activeIdRef.current = created.id
           setActiveId(created.id)
           setSearchParams({ session: created.id }, { replace: true })
         } catch (err) {
@@ -978,13 +1017,34 @@ export function ChatPage() {
     }
   }, [push, searchParams, setSearchParams])
 
+  // Synchronously isolate & reset all per-session state whenever activeId changes
   useEffect(() => {
+    // Abort any in-flight client stream from the previous session (server turn remains durable!)
+    abortRef.current?.abort()
+    abortRef.current = null
+    setStreamingSessionId(null)
+    setStreamPhase(null)
+    setStreamRound(null)
+    setStreamTool(null)
+    setStreamToolSec(null)
+    resetStreamBuffers(activeId)
+    setContextInfo(null)
+    setTodos([])
+    setTurns([])
+    setSessionFiles([])
+    setTreeData(null)
+    setAttachments([])
+    setShowScrollBottom(false)
+
     if (activeId) {
+      setDetail((prev) => (prev && prev.id === activeId ? prev : null))
       void loadDetail(activeId)
     } else {
+      detailReqSeqRef.current += 1
       setDetail(null)
+      setLoadingDetail(false)
     }
-  }, [activeId, loadDetail])
+  }, [activeId, loadDetail, resetStreamBuffers])
 
   // Auto-grow composer textarea cleanly
   useEffect(() => {
@@ -1000,10 +1060,11 @@ export function ChatPage() {
   )
 
   const isServerRunning = Boolean(
-    resuming ||
-      detail?.running ||
-      activeSessionSummary?.running ||
-      turns.some((t) => t.status === 'running'),
+    activeId &&
+      (resuming ||
+        currentDetail?.running ||
+        activeSessionSummary?.running ||
+        (currentDetail != null && turns.some((t) => t.status === 'running'))),
   )
 
   // Abort active client fetch cleanly on unmount (server turn stays durable & keeps running)
@@ -1016,16 +1077,19 @@ export function ChatPage() {
   // Auto-reattach live SSE stream (with instant-wake poll fallback) whenever returning to a running session
   useEffect(() => {
     if (!activeId || !isServerRunning || streaming) return
+    const sid = activeId
     let alive = true
     const ctrl = new AbortController()
+    const isStillCurrent = () => alive && activeIdRef.current === sid
 
-    resetStreamBuffers()
+    resetStreamBuffers(sid)
     setStreamRound(null)
     setStreamTool(null)
     setStreamToolSec(null)
     setStreamPhase('已自动续接后台运行中的智能体实时流…')
 
     const applyPhase = (p: { phase?: string; round?: number; tool?: string }) => {
+      if (!isStillCurrent()) return
       const kind = String(p.phase || '')
       if (typeof p.round === 'number') setStreamRound(p.round + 1)
       if (kind === 'thinking') {
@@ -1049,11 +1113,12 @@ export function ChatPage() {
     }
 
     const appendPersistedMessage = (msg: ChatMessageOut) => {
-      resetStreamBuffers()
+      if (!isStillCurrent()) return
+      resetStreamBuffers(sid)
       setStreamTool(null)
       setStreamToolSec(null)
       setDetail((prev) => {
-        if (!prev) return prev
+        if (!prev || prev.id !== sid) return prev
         if (msg.id && prev.messages.some((x) => x.id === msg.id)) return prev
         return { ...prev, messages: [...prev.messages, msg] }
       })
@@ -1061,53 +1126,62 @@ export function ChatPage() {
 
     const runAttach = async () => {
       // When triggered by manual resume, give backend ~220ms to run hub.begin() so we don't hit stale ended flag
-      if (resumingRef.current) {
+      if (resumingSessionRef.current === sid) {
         await new Promise((r) => window.setTimeout(r, 220))
-        if (!alive) return
+        if (!isStillCurrent()) return
       }
 
       let ended = false
       let sawFrames = false
       try {
         await api.attachChatStream(
-          activeId,
+          sid,
           {
             onPhase: (p) => {
+              if (!isStillCurrent()) return
               sawFrames = true
               applyPhase(p)
             },
             onDelta: (chunk) => {
+              if (!isStillCurrent()) return
               sawFrames = true
               streamBufRef.current.text += chunk
-              scheduleStreamFlush()
+              scheduleStreamFlush(sid)
             },
             onReasoning: (chunk) => {
+              if (!isStillCurrent()) return
               sawFrames = true
               streamBufRef.current.reasoning += chunk
-              scheduleStreamFlush()
+              scheduleStreamFlush(sid)
             },
             onToolOutput: (p) => {
+              if (!isStillCurrent()) return
               sawFrames = true
               const c = p.chunk || p.text || ''
               if (c) {
                 streamBufRef.current.toolOut = (streamBufRef.current.toolOut + c).slice(-8000)
-                scheduleStreamFlush()
+                scheduleStreamFlush(sid)
               }
             },
             onToolProgress: (p) => {
+              if (!isStillCurrent()) return
               sawFrames = true
               if (p.tool) setStreamTool(p.tool)
               if (typeof p.seconds === 'number') setStreamToolSec(p.seconds)
             },
             onMessage: (m) => {
+              if (!isStillCurrent()) return
               sawFrames = true
               appendPersistedMessage(m)
             },
             onAwaiting: () => {
+              if (!isStillCurrent()) return
               sawFrames = true
               setStreamPhase('等待人工审批工具调用')
             },
-            onError: (message) => push(message, 'error'),
+            onError: (message) => {
+              if (isStillCurrent()) push(message, 'error')
+            },
             onDone: () => {
               ended = true
             },
@@ -1118,35 +1192,35 @@ export function ChatPage() {
         // SSE unavailable or closed; fallback sync below handles completion / continuation
       }
 
-      if (!alive) return
+      if (!isStillCurrent()) return
 
-      if (ended && (sawFrames || !resumingRef.current)) {
-        resetStreamBuffers()
+      if (ended && (sawFrames || resumingSessionRef.current !== sid)) {
+        resetStreamBuffers(sid)
         setStreamPhase(null)
         setStreamRound(null)
         setStreamTool(null)
         setStreamToolSec(null)
-        await Promise.all([loadDetail(activeId, { silent: true }), loadSessions()])
+        await Promise.all([loadDetail(sid, { silent: true }), loadSessions()])
         return
       }
 
       // Fallback loop: if SSE stream ended without a done frame (or before resume hub.begin()),
       // sync DB + instant-wake long-poll until turn completes.
       let cursor = 0
-      while (alive) {
+      while (isStillCurrent()) {
         try {
-          const snap = await api.pollChatLive(activeId, cursor)
-          if (!alive) break
+          const snap = await api.pollChatLive(sid, cursor)
+          if (!isStillCurrent()) break
           if (snap.frames.length > 0) sawFrames = true
           cursor = snap.next
           for (const frame of snap.frames) {
             const data = (frame.data || {}) as Record<string, unknown>
             if (frame.event === 'delta' && typeof data.text === 'string') {
               streamBufRef.current.text += data.text
-              scheduleStreamFlush()
+              scheduleStreamFlush(sid)
             } else if (frame.event === 'reasoning' && typeof data.text === 'string') {
               streamBufRef.current.reasoning += data.text
-              scheduleStreamFlush()
+              scheduleStreamFlush(sid)
             } else if (frame.event === 'tool_output') {
               const c =
                 typeof data.chunk === 'string'
@@ -1156,7 +1230,7 @@ export function ChatPage() {
                     : ''
               if (c) {
                 streamBufRef.current.toolOut = (streamBufRef.current.toolOut + c).slice(-8000)
-                scheduleStreamFlush()
+                scheduleStreamFlush(sid)
               }
             } else if (frame.event === 'tool_progress') {
               if (typeof data.tool === 'string') setStreamTool(data.tool)
@@ -1171,29 +1245,30 @@ export function ChatPage() {
           }
 
           if (snap.ended || ended) {
-            if (!sawFrames && resumingRef.current) {
+            if (!sawFrames && resumingSessionRef.current === sid) {
               // Resume HTTP request is still starting hub.begin(); wait briefly and re-poll
               cursor = 0
               await new Promise((r) => window.setTimeout(r, 350))
               continue
             }
-            resetStreamBuffers()
+            if (!isStillCurrent()) break
+            resetStreamBuffers(sid)
             setStreamPhase(null)
-            await Promise.all([loadDetail(activeId, { silent: true }), loadSessions()])
+            await Promise.all([loadDetail(sid, { silent: true }), loadSessions()])
             break
           }
 
           if (snap.frames.length === 0) {
             const [freshDetail, freshTurns] = await Promise.all([
-              api.getChatSession(activeId, 180).catch(() => null),
-              api.getChatTurns(activeId).catch(() => null),
+              api.getChatSession(sid, 180).catch(() => null),
+              api.getChatTurns(sid).catch(() => null),
             ])
-            if (!alive) break
-            if (freshDetail) setDetail(freshDetail)
+            if (!isStillCurrent()) break
+            if (freshDetail && freshDetail.id === sid) setDetail(freshDetail)
             if (freshTurns) {
               setTurns(freshTurns)
-              if (!freshTurns.some((t) => t.status === 'running') && !resumingRef.current) {
-                resetStreamBuffers()
+              if (!freshTurns.some((t) => t.status === 'running') && resumingSessionRef.current !== sid) {
+                resetStreamBuffers(sid)
                 setStreamPhase(null)
                 await loadSessions()
                 break
@@ -1201,7 +1276,7 @@ export function ChatPage() {
             }
           }
         } catch {
-          if (!alive) break
+          if (!isStillCurrent()) break
           await new Promise((r) => window.setTimeout(r, 1200))
         }
       }
@@ -1211,7 +1286,7 @@ export function ChatPage() {
     return () => {
       alive = false
       ctrl.abort()
-      resetStreamBuffers()
+      resetStreamBuffers(null)
       setStreamPhase(null)
       setStreamRound(null)
       setStreamTool(null)
@@ -1242,7 +1317,7 @@ export function ChatPage() {
     if (!showScrollBottom) {
       scrollToBottom(false)
     }
-  }, [detail?.messages.length, streamText, streamReasoning, liveToolOut, showScrollBottom, scrollToBottom])
+  }, [currentDetail?.messages.length, streamText, streamReasoning, liveToolOut, showScrollBottom, scrollToBottom])
 
   const handleScrollArea = () => {
     const el = scrollAreaRef.current
@@ -1260,17 +1335,18 @@ export function ChatPage() {
   }, [sessions])
 
   const displayBlocks = useMemo(
-    () => groupConversationMessages(detail?.messages || []),
-    [detail?.messages],
+    () => groupConversationMessages(currentDetail?.messages || []),
+    [currentDetail?.messages],
   )
 
   const resumableTurn = useMemo(() => {
+    if (!currentDetail) return null
     return turns.find((t) => t.resumable && t.status === 'interrupted') || null
-  }, [turns])
+  }, [currentDetail, turns])
 
   const attackChainSteps = useMemo(() => {
-    if (!detail) return []
-    return detail.messages
+    if (!currentDetail) return []
+    return currentDetail.messages
       .filter((m) => m.role === 'tool' || m.toolName)
       .map((m, idx) => ({
         index: idx + 1,
@@ -1282,7 +1358,7 @@ export function ChatPage() {
         summary: summarizeToolArgs(m.toolName, m.toolArgs) || m.content.slice(0, 140),
         ...classifyAttackStage(m.toolName || ''),
       }))
-  }, [detail])
+  }, [currentDetail])
 
   const activeProviderLabel = useMemo(
     () => providers.find((p) => p.id === selectedProviderId)?.label || '默认模型',
@@ -1298,6 +1374,7 @@ export function ChatPage() {
     try {
       const created = await api.createChatSession({})
       setSessions((prev) => [created, ...prev])
+      activeIdRef.current = created.id
       setActiveId(created.id)
       setSearchParams({ session: created.id }, { replace: true })
     } catch (err) {
@@ -1306,30 +1383,34 @@ export function ChatPage() {
   }
 
   const handleSelectSession = (id: string) => {
+    if (id === activeIdRef.current) return
+    activeIdRef.current = id
     setActiveId(id)
     setShowScrollBottom(false)
     setSearchParams({ session: id }, { replace: true })
   }
 
   const handleProfileChange = async (profileId: string) => {
+    const sid = activeId
     setSelectedProfileId(profileId)
-    if (!activeId) return
+    if (!sid) return
     try {
-      await api.updateChatSettings(activeId, { agentProfileId: profileId || null })
+      await api.updateChatSettings(sid, { agentProfileId: profileId || null })
       push(
         profileId ? '已绑定 Agent 角色画像（工具与技能边界生效）' : '已切换为平台默认角色',
         'success',
       )
-      await loadDetail(activeId)
+      if (activeIdRef.current === sid) await loadDetail(sid)
     } catch (err) {
       push(err instanceof ApiClientError ? err.message : '切换角色失败', 'error')
     }
   }
 
   const handleFork = async (messageSeq?: number) => {
-    if (!activeId) return
+    const sid = activeId
+    if (!sid) return
     try {
-      const forked = await api.forkChatSession(activeId, { messageSeq })
+      const forked = await api.forkChatSession(sid, { messageSeq })
       push(`已分叉出新分支：${forked.title}`, 'success')
       await loadSessions()
       handleSelectSession(forked.id)
@@ -1339,41 +1420,52 @@ export function ChatPage() {
   }
 
   const handleOpenTree = async () => {
-    if (!activeId) return
+    const sid = activeId
+    if (!sid) return
+    setTreeData(null)
     setTreeOpen(true)
     try {
-      const t = await api.getChatSessionTree(activeId)
-      setTreeData(t)
+      const t = await api.getChatSessionTree(sid)
+      if (activeIdRef.current === sid) setTreeData(t)
     } catch (err) {
       push(err instanceof ApiClientError ? err.message : '加载分支树失败', 'error')
     }
   }
 
   const handleResumeTurn = async (runId: string) => {
-    if (!activeId || resuming) return
-    setResuming(true)
+    const sid = activeId
+    if (!sid || resumingSessionRef.current === sid) return
+    resumingSessionRef.current = sid
+    setResumingSessionId(sid)
     setShowScrollBottom(false)
     setStreamPhase('正在接手并续跑中断的智能体轮次…')
     // Optimistically mark session running so the live SSE reattach effect subscribes to chat_live.hub immediately
-    setDetail((prev) => (prev ? { ...prev, running: true } : prev))
+    setDetail((prev) => (prev && prev.id === sid ? { ...prev, running: true } : prev))
     try {
-      await api.resumeChatTurn(activeId, runId)
+      await api.resumeChatTurn(sid, runId)
       push('续跑轮次已完成', 'success')
-      await Promise.all([loadDetail(activeId, { silent: true }), loadSessions()])
+      await loadSessions()
+      if (activeIdRef.current === sid) {
+        await loadDetail(sid, { silent: true })
+      }
     } catch (err) {
       push(err instanceof ApiClientError ? err.message : '恢复轮次失败', 'error')
-      await loadDetail(activeId, { silent: true })
+      if (activeIdRef.current === sid) {
+        await loadDetail(sid, { silent: true })
+      }
     } finally {
-      setResuming(false)
+      if (resumingSessionRef.current === sid) resumingSessionRef.current = null
+      setResumingSessionId((cur) => (cur === sid ? null : cur))
     }
   }
 
   const handleProviderChange = async (providerId: string) => {
+    const sid = activeId
     setSelectedProviderId(providerId)
-    if (!activeId) return
+    if (!sid) return
     try {
-      await api.updateChatSettings(activeId, { providerId: providerId || null })
-      await loadDetail(activeId)
+      await api.updateChatSettings(sid, { providerId: providerId || null })
+      if (activeIdRef.current === sid) await loadDetail(sid)
     } catch (err) {
       push(err instanceof ApiClientError ? err.message : '保存会话模型失败', 'error')
     }
@@ -1409,7 +1501,9 @@ export function ChatPage() {
       await api.archiveChatSession(archiveTarget.id)
       if (activeId === archiveTarget.id) {
         const nextActive = sessions.find((x) => !x.archived && x.id !== archiveTarget.id)
-        setActiveId(nextActive ? nextActive.id : null)
+        const nextId = nextActive ? nextActive.id : null
+        activeIdRef.current = nextId
+        setActiveId(nextId)
         if (nextActive) setSearchParams({ session: nextActive.id }, { replace: true })
         else setSearchParams({}, { replace: true })
       }
@@ -1440,6 +1534,7 @@ export function ChatPage() {
     try {
       await api.purgeChatSession(purgeTarget.id)
       if (activeId === purgeTarget.id) {
+        activeIdRef.current = null
         setActiveId(null)
         setDetail(null)
         setSearchParams({}, { replace: true })
@@ -1458,7 +1553,8 @@ export function ChatPage() {
     setConfirmBusy(true)
     try {
       const res = await api.purgeArchivedChatSessions()
-      if (detail?.archived) {
+      if (currentDetail?.archived) {
+        activeIdRef.current = null
         setActiveId(null)
         setDetail(null)
         setSearchParams({}, { replace: true })
@@ -1511,7 +1607,9 @@ export function ChatPage() {
       const ok = results.filter((r) => r.status === 'fulfilled').length
       if (activeId && batchArchiveIds.includes(activeId)) {
         const nextActive = sessions.find((x) => !x.archived && !batchArchiveIds.includes(x.id))
-        setActiveId(nextActive ? nextActive.id : null)
+        const nextId = nextActive ? nextActive.id : null
+        activeIdRef.current = nextId
+        setActiveId(nextId)
         if (nextActive) setSearchParams({ session: nextActive.id }, { replace: true })
         else setSearchParams({}, { replace: true })
       }
@@ -1539,6 +1637,7 @@ export function ChatPage() {
       )
       const ok = results.filter((r) => r.status === 'fulfilled').length
       if (activeId && batchPurgeIds.includes(activeId)) {
+        activeIdRef.current = null
         setActiveId(null)
         setDetail(null)
         setSearchParams({}, { replace: true })
@@ -1557,6 +1656,7 @@ export function ChatPage() {
     if (!targetSessionId) {
       const created = await api.createChatSession({})
       setSessions((prev) => [created, ...prev])
+      activeIdRef.current = created.id
       setActiveId(created.id)
       targetSessionId = created.id
     }
@@ -1564,7 +1664,9 @@ export function ChatPage() {
     try {
       for (const file of Array.from(files)) {
         const out = await api.uploadChatAttachment(targetSessionId, file)
-        setAttachments((prev) => [...prev, out])
+        if (activeIdRef.current === targetSessionId) {
+          setAttachments((prev) => [...prev, out])
+        }
       }
       push('附件已上传至会话工作区', 'success')
     } catch (err) {
@@ -1584,6 +1686,7 @@ export function ChatPage() {
       try {
         const created = await api.createChatSession({})
         setSessions((prev) => [created, ...prev])
+        activeIdRef.current = created.id
         setActiveId(created.id)
         setSearchParams({ session: created.id }, { replace: true })
         sid = created.id
@@ -1596,8 +1699,10 @@ export function ChatPage() {
     if (streaming || isServerRunning) {
       try {
         const msg = await api.interjectChat(sid, text)
-        setDetail((prev) => (prev ? { ...prev, messages: [...prev.messages, msg] } : prev))
-        setInput('')
+        setDetail((prev) =>
+          prev && prev.id === sid ? { ...prev, messages: [...prev.messages, msg] } : prev,
+        )
+        if (activeIdRef.current === sid) setInput('')
         push('已插入消息，智能体将在下一轮读取', 'success')
       } catch (err) {
         push(err instanceof ApiClientError ? err.message : '插话失败', 'error')
@@ -1609,16 +1714,16 @@ export function ChatPage() {
     setInput('')
     setAttachments([])
     setShowScrollBottom(false)
-    setStreaming(true)
+    setStreamingSessionId(sid)
     setStreamPhase('正在连接模型…')
     setStreamRound(1)
     setStreamTool(null)
     setStreamToolSec(null)
-    resetStreamBuffers()
+    resetStreamBuffers(sid)
 
     const optimisticUser: ChatMessageOut = {
       id: `local-${Date.now()}`,
-      seq: (detail?.messages.at(-1)?.seq || 0) + 1,
+      seq: (currentDetail?.messages.at(-1)?.seq || 0) + 1,
       role: 'user',
       content: text,
       reasoning: null,
@@ -1633,11 +1738,12 @@ export function ChatPage() {
       approvalDecidedAt: null,
     }
     setDetail((prev) =>
-      prev ? { ...prev, messages: [...prev.messages, optimisticUser] } : prev,
+      prev && prev.id === sid ? { ...prev, messages: [...prev.messages, optimisticUser] } : prev,
     )
 
     const ctrl = new AbortController()
     abortRef.current = ctrl
+    const isStillCurrent = () => activeIdRef.current === sid && !ctrl.signal.aborted
 
     try {
       await api.streamChatMessage(
@@ -1649,6 +1755,7 @@ export function ChatPage() {
         },
         {
           onPhase: (p) => {
+            if (!isStillCurrent()) return
             if (typeof p.round === 'number') setStreamRound(p.round + 1)
             if (p.phase === 'thinking') {
               setStreamTool(null)
@@ -1663,30 +1770,35 @@ export function ChatPage() {
             }
           },
           onDelta: (chunk) => {
+            if (!isStillCurrent()) return
             streamBufRef.current.text += chunk
-            scheduleStreamFlush()
+            scheduleStreamFlush(sid)
           },
           onReasoning: (chunk) => {
+            if (!isStillCurrent()) return
             streamBufRef.current.reasoning += chunk
-            scheduleStreamFlush()
+            scheduleStreamFlush(sid)
           },
           onToolOutput: (p) => {
+            if (!isStillCurrent()) return
             const c = p.chunk || p.text || ''
             if (c) {
               streamBufRef.current.toolOut = (streamBufRef.current.toolOut + c).slice(-8000)
-              scheduleStreamFlush()
+              scheduleStreamFlush(sid)
             }
           },
           onToolProgress: (p) => {
+            if (!isStillCurrent()) return
             if (p.tool) setStreamTool(p.tool)
             if (typeof p.seconds === 'number') setStreamToolSec(p.seconds)
           },
           onMessage: (msg) => {
-            resetStreamBuffers()
+            if (!isStillCurrent()) return
+            resetStreamBuffers(sid)
             setStreamTool(null)
             setStreamToolSec(null)
             setDetail((prev) => {
-              if (!prev) return prev
+              if (!prev || prev.id !== sid) return prev
               const withoutLocal =
                 msg.role === 'user'
                   ? prev.messages.filter((m) => !m.id.startsWith('local-'))
@@ -1695,26 +1807,41 @@ export function ChatPage() {
               return { ...prev, messages: [...withoutLocal, msg] }
             })
           },
-          onAwaiting: () => setStreamPhase('等待人工审批工具调用'),
-          onError: (message) => push(message, 'error'),
-          onDone: () => setStreamPhase(null),
+          onAwaiting: () => {
+            if (isStillCurrent()) setStreamPhase('等待人工审批工具调用')
+          },
+          onError: (message) => {
+            if (isStillCurrent()) push(message, 'error')
+          },
+          onDone: () => {
+            if (isStillCurrent()) setStreamPhase(null)
+          },
         },
         ctrl.signal,
       )
-      await Promise.all([loadDetail(sid, { silent: true }), loadSessions()])
-    } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
-        push(err instanceof ApiClientError ? err.message : '对话请求中断', 'error')
+      await loadSessions()
+      if (activeIdRef.current === sid) {
         await loadDetail(sid, { silent: true })
       }
+    } catch (err) {
+      if ((err as Error).name !== 'AbortError') {
+        if (activeIdRef.current === sid) {
+          push(err instanceof ApiClientError ? err.message : '对话请求中断', 'error')
+          await loadDetail(sid, { silent: true })
+        }
+      }
     } finally {
-      setStreaming(false)
-      setStreamPhase(null)
-      setStreamRound(null)
-      setStreamTool(null)
-      setStreamToolSec(null)
-      resetStreamBuffers()
-      abortRef.current = null
+      setStreamingSessionId((cur) => (cur === sid ? null : cur))
+      if (abortRef.current === ctrl) {
+        abortRef.current = null
+      }
+      if (activeIdRef.current === sid) {
+        setStreamPhase(null)
+        setStreamRound(null)
+        setStreamTool(null)
+        setStreamToolSec(null)
+        resetStreamBuffers(sid)
+      }
     }
   }
 
@@ -1781,22 +1908,24 @@ export function ChatPage() {
   }
 
   const handleApprove = async (messageId: string, approve: boolean) => {
-    if (!activeId) return
+    const sid = activeId
+    if (!sid) return
     try {
-      await api.approveChatTool(activeId, messageId, approve)
+      await api.approveChatTool(sid, messageId, approve)
       push(approve ? '已批准工具执行' : '已拒绝该工具调用', 'success')
-      await loadDetail(activeId)
+      if (activeIdRef.current === sid) await loadDetail(sid)
     } catch (err) {
       push(err instanceof ApiClientError ? err.message : '审批操作失败', 'error')
     }
   }
 
   const handleCompact = async () => {
-    if (!activeId) return
+    const sid = activeId
+    if (!sid) return
     try {
-      await api.compactChatSession(activeId)
+      await api.compactChatSession(sid)
       push('上下文已完成摘要压缩', 'success')
-      await loadDetail(activeId)
+      if (activeIdRef.current === sid) await loadDetail(sid)
     } catch (err) {
       push(err instanceof ApiClientError ? err.message : '上下文压缩失败', 'error')
     }
@@ -1832,7 +1961,7 @@ export function ChatPage() {
         {/* Session Header Bar (with subtle ambient WebGL shader ribbon) */}
         <div className="relative shrink-0 overflow-hidden border-b border-line bg-surface/95 px-4 py-2.5 backdrop-blur">
           <div className="pointer-events-none absolute inset-0 z-0 opacity-75 dark:opacity-35">
-            <MeshAuroraShader palette={detail?.challenge ? 'ctf' : 'indigo'} speed={0.55} />
+            <MeshAuroraShader palette={currentDetail?.challenge ? 'ctf' : 'indigo'} speed={0.55} />
             <div className="absolute inset-0 bg-gradient-to-r from-surface/74 via-surface/58 to-surface/72 dark:from-surface/92 dark:via-surface/85 dark:to-surface/90" />
           </div>
           <div className="relative z-10 flex flex-wrap items-center justify-between gap-2.5">
@@ -1846,28 +1975,28 @@ export function ChatPage() {
               <PanelLeft className="h-4 w-4" />
             </button>
 
-            <TactileAppIcon variant={detail?.challenge ? 'ctf' : 'chat'} size={30} />
+            <TactileAppIcon variant={currentDetail?.challenge ? 'ctf' : 'chat'} size={30} />
 
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <h1 className="truncate text-sm font-semibold text-ink">
-                  {detail?.title || '安全智能体对话工作台'}
+                  {currentDetail?.title || activeSessionSummary?.title || '安全智能体对话工作台'}
                 </h1>
-                {detail?.project && (
+                {currentDetail?.project && (
                   <Badge className="shrink-0">
                     <Folder className="h-2.5 w-2.5 text-accent" />
-                    {detail.project}
+                    {currentDetail.project}
                   </Badge>
                 )}
-                {detail?.requireApproval && (
+                {currentDetail?.requireApproval && (
                   <Badge className="shrink-0 border-amber-300/70 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
                     <ShieldCheck className="h-2.5 w-2.5" />
                     人工审批
                   </Badge>
                 )}
-                {detail?.challenge && (
+                {currentDetail?.challenge && (
                   <Badge className="shrink-0 border-indigo-200 bg-indigo-50 text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950/60 dark:text-indigo-300">
-                    CTF · {detail.challenge.title}
+                    CTF · {currentDetail.challenge.title}
                   </Badge>
                 )}
               </div>
@@ -1955,12 +2084,12 @@ export function ChatPage() {
               />
             )}
 
-            {activeId && detail && (
+            {activeId && currentDetail && (
               <>
                 <Button
                   size="sm"
                   variant="ghost"
-                  onClick={() => setSettingsTarget(detail)}
+                  onClick={() => setSettingsTarget(currentDetail)}
                   title="会话设置（重命名 / 项目分组 / 人工审批 / MCP 与技能挂载）"
                 >
                   <SlidersHorizontal className="h-3.5 w-3.5" />
@@ -2041,10 +2170,11 @@ export function ChatPage() {
           </div>
         )}
 
-        {/* Pinned CTF Challenge Cockpit (always accessible above scroll area) */}
-        {detail?.challenge && (
+        {/* Pinned CTF Challenge Cockpit (keyed by challengeId to prevent cross-session state reuse) */}
+        {currentDetail?.challenge && (
           <ChallengeCockpit
-            challengeRef={detail.challenge}
+            key={currentDetail.challenge.id}
+            challengeRef={currentDetail.challenge}
             hasChatMessages={displayBlocks.length > 0}
             onQuickPrompt={(prompt) => void handleSend(prompt)}
             onRefreshSession={() =>
@@ -2060,14 +2190,14 @@ export function ChatPage() {
           className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6"
         >
           <div className="mx-auto max-w-4xl space-y-5 pb-4">
-            {loadingDetail ? (
+            {loadingDetail || (activeId && !currentDetail) ? (
               <div className="flex items-center justify-center py-24 text-xs text-ink-muted">
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 加载会话记录…
               </div>
             ) : (
               <>
-                {(!detail || displayBlocks.length === 0) && !detail?.challenge ? (
+                {(!currentDetail || displayBlocks.length === 0) && !currentDetail?.challenge ? (
                   <div className="relative overflow-hidden rounded-2xl border border-line bg-surface/80 px-6 py-10 shadow-editorial">
                     <div className="pointer-events-none absolute inset-0 z-0 opacity-70">
                       <DotWarpCanvas gap={26} />
@@ -2149,9 +2279,10 @@ export function ChatPage() {
               </>
             )}
 
-            {/* Live Streaming / Reattached Turn Card */}
-            {(streaming || streamPhase) && (
+            {/* Live Streaming / Reattached Turn Card (strictly bound to activeId) */}
+            {activeId && (streaming || streamPhase) && (
               <LiveStreamCard
+                key={activeId}
                 phase={streamPhase}
                 round={streamRound}
                 activeTool={streamTool}
@@ -2452,9 +2583,16 @@ export function ChatPage() {
 
         {workspaceTab === 'sandbox' && activeId ? (
           <SandboxPanel
+            key={activeId}
             sessionId={activeId}
             onFilesChanged={() => {
-              void api.listSessionFiles(activeId).then(setSessionFiles).catch(() => {})
+              const sid = activeId
+              void api
+                .listSessionFiles(sid)
+                .then((fls) => {
+                  if (activeIdRef.current === sid) setSessionFiles(fls)
+                })
+                .catch(() => {})
             }}
           />
         ) : workspaceTab === 'files' ? (

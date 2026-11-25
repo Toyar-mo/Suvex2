@@ -201,28 +201,36 @@ export function ChallengeCockpit({
   const [writeup, setWriteup] = useState<KernelWriteupOut | null>(null)
   const traceBoxRef = useRef<HTMLDivElement | null>(null)
   const userToggledRef = useRef(false)
+  const activeChallengeIdRef = useRef(challengeRef.id)
+  activeChallengeIdRef.current = challengeRef.id
 
-  // Reset user toggle override when switching to a different challenge
+  // Reset user toggle override & stale challenge state when switching to a different challenge
   useEffect(() => {
     userToggledRef.current = false
+    setChallenge((prev) => (prev && prev.id === challengeRef.id ? prev : null))
+    setFlagDraft(challengeRef.candidateFlag || '')
+    setHintDraft('')
+    setWriteup(null)
     const solving =
       challengeRef.status === 'solving' ||
       challengeRef.status === 'environment_ready' ||
       challengeRef.status === 'submitting'
     setPanelOpen(!hasChatMessages || solving)
-  }, [challengeRef.id, challengeRef.status, hasChatMessages])
+  }, [challengeRef.id, challengeRef.status, challengeRef.candidateFlag, hasChatMessages])
 
   const loadChallenge = useCallback(async () => {
+    const cid = challengeRef.id
     try {
-      const full = await api.getKernelChallenge(challengeRef.id)
+      const full = await api.getKernelChallenge(cid)
+      if (activeChallengeIdRef.current !== cid) return
       setChallenge(full)
-      if (full.candidateFlag && !flagDraft) {
-        setFlagDraft(full.candidateFlag)
+      if (full.candidateFlag) {
+        setFlagDraft((prev) => prev || full.candidateFlag || '')
       }
     } catch {
       // Fallback to challengeRef
     }
-  }, [challengeRef.id, flagDraft])
+  }, [challengeRef.id])
 
   const effectiveStatus = challenge?.status || challengeRef.status
   const effectiveScanId = challenge?.scanId || challengeRef.scanId
@@ -409,15 +417,18 @@ export function ChallengeCockpit({
   }
 
   const handleQuickLaunch = async () => {
+    const cid = challengeRef.id
     let latest = challenge
     if (!latest || latest.environment?.status !== 'ready') {
       try {
-        latest = await api.getKernelChallenge(challengeRef.id)
+        latest = await api.getKernelChallenge(cid)
+        if (activeChallengeIdRef.current !== cid) return
         setChallenge(latest)
       } catch {
         // fallback
       }
     }
+    if (activeChallengeIdRef.current !== cid) return
     setPanelOpen(false)
     onQuickPrompt(buildInteractivePrompt(latest))
   }

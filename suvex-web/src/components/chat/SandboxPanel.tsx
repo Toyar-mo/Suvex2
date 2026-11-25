@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   Box,
   Check,
@@ -41,50 +41,64 @@ export function SandboxPanel({
   const [running, setRunning] = useState(false)
   const [history, setHistory] = useState<Array<{ command: string; res: ChatSandboxExecOut }>>([])
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null)
+  const sessionIdRef = useRef(sessionId)
+  sessionIdRef.current = sessionId
 
   const loadStatus = useCallback(async () => {
+    const sid = sessionId
     setLoading(true)
     try {
-      const s = await api.getChatSandboxStatus(sessionId)
+      const s = await api.getChatSandboxStatus(sid)
+      if (sessionIdRef.current !== sid) return
       setStatus(s)
     } catch (err) {
+      if (sessionIdRef.current !== sid) return
       push(err instanceof ApiClientError ? err.message : '获取沙箱状态失败', 'error')
     } finally {
-      setLoading(false)
+      if (sessionIdRef.current === sid) setLoading(false)
     }
   }, [sessionId, push])
 
   useEffect(() => {
+    setStatus(null)
+    setHistory([])
+    setCmd('')
     void loadStatus()
   }, [loadStatus])
 
   const handleReset = async () => {
+    const sid = sessionId
     setResetting(true)
     try {
-      const s = await api.resetChatSandbox(sessionId)
+      const s = await api.resetChatSandbox(sid)
+      if (sessionIdRef.current !== sid) return
       setStatus(s)
       push('沙箱容器已重建，/work/persist 产物已保留', 'success')
     } catch (err) {
+      if (sessionIdRef.current !== sid) return
       push(err instanceof ApiClientError ? err.message : '重建沙箱失败', 'error')
     } finally {
-      setResetting(false)
+      if (sessionIdRef.current === sid) setResetting(false)
     }
   }
 
   const runCommand = async (commandToRun: string) => {
     const trimmed = commandToRun.trim()
     if (!trimmed || running) return
+    const sid = sessionId
     setRunning(true)
     try {
-      const res = await api.execChatSandbox(sessionId, trimmed, 30)
+      const res = await api.execChatSandbox(sid, trimmed, 30)
+      if (sessionIdRef.current !== sid) return
       setHistory((prev) => [{ command: trimmed, res }, ...prev].slice(0, 12))
       setCmd('')
       await loadStatus()
-      onFilesChanged?.()
+      if (sessionIdRef.current === sid) onFilesChanged?.()
     } catch (err) {
+      if (sessionIdRef.current !== sid) return
       push(err instanceof ApiClientError ? err.message : '沙箱执行命令失败', 'error')
     } finally {
-      setRunning(false)
+      if (sessionIdRef.current === sid) setRunning(false)
     }
   }
 
