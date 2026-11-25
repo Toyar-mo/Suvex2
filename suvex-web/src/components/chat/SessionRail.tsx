@@ -11,6 +11,7 @@ import {
   Flag,
   Folder,
   GitFork,
+  Loader2,
   MoreHorizontal,
   Pencil,
   Pin,
@@ -31,6 +32,7 @@ import { cn } from '@/lib/cn'
 export interface SessionRailProps {
   sessions: ChatSessionOut[]
   activeId: string | null
+  runningIds?: ReadonlySet<string>
   onSelect: (id: string) => void
   onNew: () => void
   onRename: (id: string, title: string) => Promise<void>
@@ -228,6 +230,7 @@ function SessionActionMenu({
 export function SessionRail({
   sessions,
   activeId,
+  runningIds,
   onSelect,
   onNew,
   onRename,
@@ -245,6 +248,7 @@ export function SessionRail({
   onRequestBatchPurge,
 }: SessionRailProps) {
   const [tab, setTab] = useState<'active' | 'archived'>('active')
+  const [onlyRunning, setOnlyRunning] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [projectFilter, setProjectFilter] = useState<string>('__all__')
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({})
@@ -287,8 +291,19 @@ export function SessionRail({
     )
   }
 
+  const isSessionRunning = (s: ChatSessionOut) =>
+    Boolean(s.running || (runningIds && runningIds.has(s.id)))
+
   const activeSessions = useMemo(() => sessions.filter((s) => !s.archived), [sessions])
   const archivedSessions = useMemo(() => sessions.filter((s) => s.archived), [sessions])
+  const runningCount = useMemo(
+    () => activeSessions.filter((s) => Boolean(s.running || runningIds?.has(s.id))).length,
+    [activeSessions, runningIds],
+  )
+
+  useEffect(() => {
+    if (onlyRunning && runningCount === 0) setOnlyRunning(false)
+  }, [onlyRunning, runningCount])
 
   const projectNames = useMemo(() => {
     const set = new Set<string>()
@@ -302,6 +317,9 @@ export function SessionRail({
     const q = searchQuery.trim().toLowerCase()
     const base = tab === 'active' ? activeSessions : archivedSessions
     return base.filter((s) => {
+      if (tab === 'active' && onlyRunning && !(s.running || runningIds?.has(s.id))) {
+        return false
+      }
       if (tab === 'active' && projectFilter !== '__all__') {
         if (projectFilter === '__none__') {
           if (s.project?.trim()) return false
@@ -315,7 +333,7 @@ export function SessionRail({
         (s.project || '').toLowerCase().includes(q)
       )
     })
-  }, [tab, activeSessions, archivedSessions, searchQuery, projectFilter])
+  }, [tab, activeSessions, archivedSessions, searchQuery, projectFilter, onlyRunning, runningIds])
 
   const groupedActive = useMemo(() => {
     const pinned: ChatSessionOut[] = []
@@ -378,6 +396,7 @@ export function SessionRail({
 
   const renderSessionRow = (s: ChatSessionOut) => {
     const isActive = s.id === activeId
+    const isRunning = isSessionRunning(s)
     const isRenaming = renamingId === s.id
     const isChecked = selectedIds.includes(s.id)
     return (
@@ -398,12 +417,21 @@ export function SessionRail({
           selectMode && isChecked
             ? 'bg-accent-soft text-ink ring-1 ring-accent/40'
             : isActive
-              ? 'bg-accent-soft/75 text-ink ring-1 ring-accent/25'
-              : 'text-ink-secondary hover:bg-subtle hover:text-ink',
+              ? isRunning
+                ? 'bg-emerald-50/75 text-ink ring-1 ring-emerald-400/50 dark:bg-emerald-950/35 dark:ring-emerald-700/60'
+                : 'bg-accent-soft/75 text-ink ring-1 ring-accent/25'
+              : isRunning
+                ? 'bg-emerald-50/45 text-ink ring-1 ring-emerald-300/45 hover:bg-emerald-50/80 dark:bg-emerald-950/20 dark:ring-emerald-800/50 dark:hover:bg-emerald-950/40'
+                : 'text-ink-secondary hover:bg-subtle hover:text-ink',
         )}
       >
-        {!selectMode && isActive && (
-          <span className="absolute bottom-2 left-0 top-2 w-0.5 rounded-r bg-accent" />
+        {!selectMode && (isActive || isRunning) && (
+          <span
+            className={cn(
+              'absolute bottom-2 left-0 top-2 w-0.5 rounded-r',
+              isRunning ? 'animate-pulse bg-emerald-500' : 'bg-accent',
+            )}
+          />
         )}
 
         {selectMode && (
@@ -458,10 +486,10 @@ export function SessionRail({
             </div>
           ) : (
             <div className="flex items-center gap-1.5">
-              {s.running && (
-                <span
-                  className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"
-                  title="运行中"
+              {isRunning && (
+                <Loader2
+                  className="h-3 w-3 shrink-0 animate-spin text-emerald-600 dark:text-emerald-400"
+                  aria-label="运行中"
                 />
               )}
               {s.pinned && <Pin className="h-3 w-3 shrink-0 text-accent" />}
@@ -478,6 +506,12 @@ export function SessionRail({
           )}
 
           <div className="mt-1 flex flex-wrap items-center gap-1.5 font-mono text-[10px] text-ink-muted">
+            {isRunning && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-emerald-300/80 bg-emerald-50 px-1.5 py-0.2 font-sans text-[10px] font-medium text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
+                运行中
+              </span>
+            )}
             <span>{s.messageCount} 条</span>
             <span>·</span>
             <span>{formatRelativeTime(s.updatedAt)}</span>
@@ -521,9 +555,29 @@ export function SessionRail({
       <div className="flex h-14 shrink-0 items-center justify-between gap-1.5 border-b border-line px-3">
         <div className="flex min-w-0 items-center gap-1.5">
           <h2 className="truncate text-xs font-semibold tracking-wide text-ink">会话管理</h2>
-          <span className="rounded-full bg-subtle px-1.5 py-0.5 font-mono text-[10px] text-ink-muted">
-            {activeSessions.length}
-          </span>
+          {runningCount > 0 ? (
+            <button
+              type="button"
+              onClick={() => {
+                setTab('active')
+                setOnlyRunning((v) => !v)
+              }}
+              className={cn(
+                'inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium transition-colors',
+                onlyRunning
+                  ? 'border-emerald-500 bg-emerald-500 text-white'
+                  : 'border-emerald-300/80 bg-emerald-50 text-emerald-700 hover:bg-emerald-100/80 dark:border-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300',
+              )}
+              title={onlyRunning ? '点击显示全部活跃会话' : '点击仅筛选正在运行的会话'}
+            >
+              <Loader2 className="h-2.5 w-2.5 animate-spin" />
+              <span>{runningCount} 运行中</span>
+            </button>
+          ) : (
+            <span className="rounded-full bg-subtle px-1.5 py-0.5 font-mono text-[10px] text-ink-muted">
+              {activeSessions.length}
+            </span>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <button
@@ -572,7 +626,10 @@ export function SessionRail({
         <div className="grid grid-cols-2 gap-1 rounded-lg border border-line bg-subtle p-0.5 text-[11px]">
           <button
             type="button"
-            onClick={() => setTab('active')}
+            onClick={() => {
+              setTab('active')
+              setOnlyRunning(false)
+            }}
             className={cn(
               'rounded-md py-1 font-medium transition-colors',
               tab === 'active'
@@ -580,7 +637,7 @@ export function SessionRail({
                 : 'text-ink-muted hover:text-ink-secondary',
             )}
           >
-            进行中 ({activeSessions.length})
+            活跃会话 ({activeSessions.length})
           </button>
           <button
             type="button"

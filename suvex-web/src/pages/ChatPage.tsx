@@ -995,6 +995,16 @@ export function ChatPage() {
       .catch(() => {})
   }, [loadSessions])
 
+  // Keep left session rail running indicators fresh every 5s (paused when tab is hidden)
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void loadSessions()
+      }
+    }, 5000)
+    return () => window.clearInterval(timer)
+  }, [loadSessions])
+
   // Sync external URL ?session=... navigation cleanly into activeId
   useEffect(() => {
     const urlSession = searchParams.get('session')
@@ -1950,6 +1960,17 @@ export function ChatPage() {
     }
   }
 
+  const runningSessionIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const s of sessions) {
+      if (s.running) ids.add(s.id)
+    }
+    if (streamingSessionId) ids.add(streamingSessionId)
+    if (resumingSessionId) ids.add(resumingSessionId)
+    if (activeId && isServerRunning) ids.add(activeId)
+    return ids
+  }, [sessions, streamingSessionId, resumingSessionId, activeId, isServerRunning])
+
   return (
     <div className="flex h-full min-h-0 flex-1 overflow-hidden bg-canvas">
       {/* Left Session Rail (Viewport-Locked, Grouped, Full Session Management) */}
@@ -1957,6 +1978,7 @@ export function ChatPage() {
         <SessionRail
           sessions={sessions}
           activeId={activeId}
+          runningIds={runningSessionIds}
           onSelect={handleSelectSession}
           onNew={() => void handleNewSession()}
           onRename={handleRenameSession}
