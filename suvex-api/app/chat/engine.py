@@ -4643,7 +4643,8 @@ async def run_turn(
                     render_truncation_reminder(len(raw_text))
                     if truncated
                     else render_format_reminder(
-                        code_block_only=nudge_policy.has_unactioned_command(text)
+                        code_block_only=nudge_policy.has_unactioned_command(text),
+                        native_tools=native_tools,
                     )
                 )
                 # ★ v1.14：纠偏续跑必须有个可见的 Phase 帧。
@@ -4974,7 +4975,8 @@ async def run_turn(
                     render_truncation_reminder(len(raw_text))
                     if truncated
                     else render_format_reminder(
-                        code_block_only=nudge_policy.has_unactioned_command(text)
+                        code_block_only=nudge_policy.has_unactioned_command(text),
+                        native_tools=native_tools,
                     )
                 )
                 # ★ v1.14：同上 —— 自动续跑要让用户看得见（见空回复分支的长注释）。
@@ -5109,12 +5111,12 @@ async def run_turn(
             )
             tool_elapsed_ms = int((time.perf_counter() - tool_started) * 1000)
             tools_used += 1
-            # ★ v1.87：计划句的打回额度是**连续**额度，不是整轮总额。
-            #   101 步 / 48 次工具的长任务里，模型每隔几个工具就会说一句
-            #   “接下来查 X”；旧代码从不复位，4 句正常的计划就把额度吃光，
-            #   最后落成「停在了下一步上」。执行了真实工具 = 还在推进，
-            #   计划打回额度应当重新开始；连续 4 次只写计划不执行才是异常。
+            # ★ v1.87 + v2.2：计划打回与工具纠偏额度都是**连续**额度，不是整轮总额。
+            #   长多题会话里每成功执行一次真实工具，说明推进正常，连续纠偏计数清零，
+            #   避免 60+ 轮任务在第 8 次偶发漏 tool_call 后失去保护。
             plan_bounces = 0
+            tool_nudges_used = 0
+            empty_nudges_used = 0
             tool_message = chat_service.append_tool_message(
                 db,
                 session=session,

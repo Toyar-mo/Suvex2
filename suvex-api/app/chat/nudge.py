@@ -388,7 +388,7 @@ _PLAN_BARE_VERB = re.compile(
     #   因为分句边界后先遇到「我」而漏判 → 落成 answer → 整轮结束。
     + r"\s*(?:我)?\s*"
     r"(?:看|查|试|跑|分析|确认|读|写|扫|执行|找|验证|反汇编|构造|编写|调试|继续|跟进|连接|上传|下载|提交|发送|打"
-    r"|获取|拉取|重启|重试|等待|轮询|探测|提取|解密|破解|利用|绕过)"
+    r"|获取|拉取|重启|重试|等待|轮询|探测|探查|排查|检查|测试|提取|解密|破解|利用|绕过|开始|着手|进入|切换|切到|转到|准备|打算|尝试|攻击|渗透|审计|逆向|求解)"
     # ★ v1.30.1：`通过/入/即/成/好` 也是"已经发生"或状态描述，不是下一步。
     # ★ v1.32：`起` —— 「看起来」是结论式开场。
     # ★ 2026-11-13：`扫描完成：…` 是结论。
@@ -427,6 +427,32 @@ def looks_like_waiting(text: str) -> bool:
     if _RESULT_MARKERS.search(body) or looks_like_result(body):
         return False
     return bool(_WAITING_OR_PROGRESS.search(body))
+
+
+#: ★ v2.2：多步工具任务中途的「简短状态旁白」结构兜底长度阈值。
+#:
+#: 实测线上会话 `chat_01M8931T560449ZNKMW5G5BSDT` 连续两轮都在跑了 15~33 个工具后，
+#: 模型发了一句十几字旁白（如「环境正在启动，等它就绪后获取访问地址。」「环境已就绪，
+#: 开始探查 XSS1。」）但漏附 `tool_calls`。单靠中文动词正则永远补不完所有说法。
+#: 结构特征：已经执行 ≥2 次工具且正文 <120 字、不是「结果」块、无完成/结论词、
+#: 也不是向用户提问（不以 ?/？ 结尾）→ 极大概率是中途旁白漏了工具调用，自动推一次。
+MAX_MIDTASK_BLURB_CHARS = 120
+
+
+def looks_like_short_midtask_narration(text: str, *, tools_used: int) -> bool:
+    """结构兜底：多步任务中途（tools_used>=2）发出的简短非结论旁白。"""
+    if tools_used < 2:
+        return False
+    body = (text or "").strip()
+    if not body or len(body) >= MAX_MIDTASK_BLURB_CHARS:
+        return False
+    if body.endswith(("?", "？")):
+        return False
+    if looks_like_result(body):
+        return False
+    if _RESULT_MARKERS.search(body) or _CONCLUSION_CUES.search(body):
+        return False
+    return True
 
 #: 正文里出现这些，说明有**实际交付物**，不该当计划打回。
 #:
@@ -661,17 +687,19 @@ def should_nudge(
     # 「任务中途不许推进」的。跑过工具的轮次本来就该继续，给它一个独立
     # 且更大的额度（`max_tool_nudges`），花的是钱，省的是用户手打「继续」。
     if tools_used > 0:
-        # ★ 2026-11-13：终止只看**结构**。完整回答没有“接下来/我先/下一步”
-        # 这类意图，也没有贴未执行的命令，就直接结束 —— 与 OMP/Agents SDK/
-        # LangGraph 的“没有 tool call 就是 final”一致。文本 ACTION 协议也不再
-        # 靠“跑过工具就推”反复重写同一份结论。
-        if not (
+        # ★ 2026-11-13 + v2.2：优先识别显式计划/等待/未执行命令；
+        #   对于已执行 ≥2 次工具的多步任务，若模型发出 <120 字且无任何结论/结果标记的
+        #   简短旁白（漏附 tool_calls 的常见模型抽风），结构兜底最多自动续推 2 次
+        #   （每次真调工具后计数清零，不会误伤完整结论，也不会死循环）。
+        if (
             looks_unfinished(text)
             or looks_like_plan(text)
             or has_unactioned_command(text)
         ):
-            return False
-        return tool_nudges_used < max_tool_nudges
+            return tool_nudges_used < max_tool_nudges
+        if looks_like_short_midtask_narration(text, tools_used=tools_used):
+            return tool_nudges_used < min(2, max_tool_nudges)
+        return False
     if has_unactioned_command(text):
         return tool_nudges_used < max_tool_nudges
     if nudges_used >= max_nudges:
