@@ -30,6 +30,7 @@ import type {
   FindingAttachmentOut,
   FindingGroupOut,
   FindingOut,
+  FindingSlaOut,
   FindingStatsOut,
   FindingStatus,
   FindingSummaryOut,
@@ -59,6 +60,9 @@ import type {
   MissionGraphOut,
   MissionIntentOut,
   MissionTaskOut,
+  NetworkRestrictionsOut,
+  NoticeRuleOut,
+  NotifyChannelOut,
   OverviewOut,
   ProviderCreatePayload,
   ProviderOut,
@@ -75,6 +79,7 @@ import type {
   SandboxOut,
   ScanCreatePayload,
   ScanOut,
+  ScanRetentionOut,
   ScanStatsOut,
   ScheduleCreatePayload,
   ScheduleListOut,
@@ -632,6 +637,60 @@ export const api = {
   getSettingsSnapshot: () => request<SettingsSnapshotOut>('/settings'),
   updateSandbox: (payload: Omit<SandboxOut, 'engine' | 'status' | 'updatedAt'>) =>
     request<SandboxOut>('/settings/sandbox', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  getNetworkRestrictions: () => request<NetworkRestrictionsOut>('/settings/network'),
+  updateNoticeRule: (payload: {
+    minSeverity: string
+    notifyOnScanComplete: boolean
+    notifyOnCriticalImmediate: boolean
+  }) =>
+    request<NoticeRuleOut>('/settings/notices/rule', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  createNoticeChannel: (payload: { kind: string; label: string; target: string; enabled: boolean }) =>
+    request<NotifyChannelOut>('/settings/notices/channels', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updateNoticeChannel: (
+    channelId: string,
+    payload: { label?: string; target?: string; enabled?: boolean },
+  ) =>
+    request<NotifyChannelOut>(`/settings/notices/channels/${encodeURIComponent(channelId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  deleteNoticeChannel: (channelId: string) =>
+    request<void>(`/settings/notices/channels/${encodeURIComponent(channelId)}`, {
+      method: 'DELETE',
+    }),
+  testNoticeChannel: (channelId: string) =>
+    request<NotifyChannelOut>(`/settings/notices/channels/${encodeURIComponent(channelId)}/test`, {
+      method: 'POST',
+    }),
+  getScanRetention: () => request<ScanRetentionOut>('/settings/scan-retention'),
+  updateScanRetention: (payload: {
+    archiveAfterDays: number
+    trashRetentionDays: number
+    artifactRetentionDays: number
+  }) =>
+    request<ScanRetentionOut>('/settings/scan-retention', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  getFindingSla: () => request<FindingSlaOut>('/settings/finding-sla'),
+  updateFindingSla: (payload: {
+    criticalDays: number
+    highDays: number
+    mediumDays: number
+    lowDays: number
+    infoDays: number
+    startFrom: 'discovered' | 'confirmed'
+  }) =>
+    request<FindingSlaOut>('/settings/finding-sla', {
       method: 'PUT',
       body: JSON.stringify(payload),
     }),

@@ -249,4 +249,31 @@ def deep_health(
             detail=f"free={free_gb:.1f}G",
         )
     )
+
+    try:
+        from app.system.telemetry import _probe_docker_sandboxes
+
+        docker_info = _probe_docker_sandboxes()
+        if docker_info.get("dockerAvailable"):
+            checks.append(
+                DeepCheckOut(
+                    name="docker",
+                    status="ok",
+                    detail=(
+                        f"daemon=up sandboxes={docker_info.get('sandboxCount', 0)} "
+                        f"containers={docker_info.get('runningTotal', 0)}"
+                    ),
+                )
+            )
+        else:
+            checks.append(
+                DeepCheckOut(
+                    name="docker",
+                    status="degraded",
+                    detail="Docker 守护进程不可达",
+                )
+            )
+    except Exception as exc:  # noqa: BLE001
+        checks.append(DeepCheckOut(name="docker", status="degraded", detail=str(exc)[:200]))
+
     return checks

@@ -424,7 +424,7 @@ def read_settings(
     sandbox = _sandbox_out(db)
     rule = settings_service.get_notice_rule(db)
     channels = settings_service.list_channels(db)
-    tokens = auth_service.list_tokens(db)
+    tokens = [t for t in auth_service.list_tokens(db) if t.revoked_at is None]
 
     return SettingsSnapshotOut(
         accounts=[ProviderOut.from_model(account) for account in providers_service.list_providers(db)],
@@ -457,9 +457,21 @@ def _sandbox_out(db: Session, *, config=None) -> SandboxOut:  # noqa: ANN001
 
     config = config if config is not None else settings_service.get_sandbox_config(db)
     effective = settings_service.effective_execution_settings(db)
+    live_status = config.status
+    if config.engine == "docker":
+        try:
+            from app.system.telemetry import _probe_docker_sandboxes
+
+            docker_info = _probe_docker_sandboxes()
+            if docker_info.get("dockerAvailable"):
+                live_status = "running" if docker_info.get("sandboxCount", 0) > 0 else "ready"
+            else:
+                live_status = "unavailable"
+        except Exception:  # noqa: BLE001
+            live_status = config.status
     return SandboxOut(
         engine=config.engine,
-        status=config.status,
+        status=live_status,
         image=config.image,
         cpuLimit=config.cpu_limit,
         memoryLimitMb=config.memory_limit_mb,

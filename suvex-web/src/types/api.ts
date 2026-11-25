@@ -45,7 +45,8 @@ export interface SandboxHealthOut {
 
 export interface DeepCheckOut {
   name: string
-  ok: boolean
+  status?: 'ok' | 'degraded' | string
+  ok?: boolean
   detail?: string | null
   latencyMs?: number | null
 }
@@ -572,9 +573,59 @@ export interface SandboxOut {
   updatedAt: string
 }
 
+export interface NoticeRuleOut {
+  minSeverity: Severity
+  notifyOnScanComplete: boolean
+  notifyOnCriticalImmediate: boolean
+  updatedAt: string
+}
+
+export interface NotifyChannelOut {
+  id: string
+  kind: 'webhook' | 'slack' | 'email' | string
+  label: string
+  target: string
+  enabled: boolean
+  verified: boolean
+  verifyError: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface NoticesOut {
+  rule: NoticeRuleOut
+  channels: NotifyChannelOut[]
+}
+
+export interface ScanRetentionOut {
+  archiveAfterDays: number
+  trashRetentionDays: number
+  artifactRetentionDays: number
+  lastSweepAt: string | null
+}
+
+export interface FindingSlaOut {
+  criticalDays: number
+  highDays: number
+  mediumDays: number
+  lowDays: number
+  infoDays: number
+  startFrom: 'discovered' | 'confirmed'
+  updatedAt: string
+}
+
+export interface NetworkRestrictionsOut {
+  guardEnabled: boolean
+  allowedHosts: string[]
+  allowedCidrs: string[]
+  builtinHosts: string[]
+  builtinCidrs: string[]
+}
+
 export interface SettingsSnapshotOut {
   accounts: ProviderOut[]
   sandbox: SandboxOut
+  notices?: NoticesOut
   tokens: ApiTokenOut[]
 }
 
