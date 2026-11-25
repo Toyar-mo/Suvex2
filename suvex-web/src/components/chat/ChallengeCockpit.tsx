@@ -280,16 +280,38 @@ export function ChallengeCockpit({
     }
   }
 
-  const buildInteractivePrompt = () => {
+  const buildInteractivePrompt = (latest?: KernelChallengeOut | null) => {
+    const ch = latest ?? challenge
+    const urls: string[] = []
+    if (ch?.environment?.accessUrl) urls.push(ch.environment.accessUrl)
+    for (const u of ch?.environment?.accessUrls || []) {
+      if (u && !urls.includes(u)) urls.push(u)
+    }
     const parts = [
-      `请帮我分析并解出这道 CTF 题目「${challenge?.title || challengeRef.title}」：`,
-      `- 分类：${challenge?.category || '未知'}`,
-      challenge?.score != null ? `- 分值：${challenge.score} pts` : '',
-      targetUrls.length > 0 ? `- 靶机地址：${targetUrls.join(', ')}` : '',
-      challenge?.description ? `\n题面信息：\n${challenge.description}` : '',
-      '\n请结合可用工具（含沙箱命令与 ctf2-suvex MCP）完成分析、拿到 Flag 并整理关键利用步骤。',
+      `请帮我分析并解出这道 CTF 题目「${ch?.title || challengeRef.title}」：`,
+      `- 分类：${ch?.category || '未知'}`,
+      ch?.remoteId ? `- 远端题目 ID：${ch.remoteId}` : '',
+      ch?.score != null ? `- 分值：${ch.score} pts` : '',
+      urls.length > 0
+        ? `- 当前动态靶机入口：${urls.join(', ')}`
+        : '- 当前尚无运行中的动态靶机，请先调用已挂载的 ctf2-suvex MCP 工具启动靶机后再测试。',
+      ch?.description ? `\n题面信息：\n${ch.description}` : '',
+      '\n请直接基于上述真实靶机入口（或通过 ctf2-suvex MCP 获取最新入口）进行分析，不要猜测域名或扫描内网，拿到 Flag 后提交并整理关键利用步骤。',
     ]
     return parts.filter(Boolean).join('\n')
+  }
+
+  const handleQuickLaunch = async () => {
+    let latest = challenge
+    if (!latest || !latest.environment?.accessUrl) {
+      try {
+        latest = await api.getKernelChallenge(challengeRef.id)
+        setChallenge(latest)
+      } catch {
+        // use existing state
+      }
+    }
+    onQuickPrompt(buildInteractivePrompt(latest))
   }
 
   const confirmedFlag = challenge?.confirmedFlag || challengeRef.confirmedFlag
@@ -533,7 +555,7 @@ export function ChallengeCockpit({
           <Button
             size="sm"
             variant="secondary"
-            onClick={() => onQuickPrompt(buildInteractivePrompt())}
+            onClick={() => void handleQuickLaunch()}
           >
             <Send className="h-3 w-3" />
             一键带题面开始对话解题

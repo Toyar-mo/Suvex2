@@ -346,7 +346,7 @@ async def discover_mounted(db: Any, session: Any) -> McpToolCatalog:
     """
     mounted = [str(name).strip() for name in (session.mcp_server_names or []) if str(name).strip()]
     catalog = McpToolCatalog()
-    if not mounted:
+    if not mounted and not getattr(session, "challenge_id", None):
         return catalog
 
     # 延迟导入：`kernel.service` 会拉起大片业务模块，而本模块被 engine /
@@ -358,6 +358,16 @@ async def discover_mounted(db: Any, session: Any) -> McpToolCatalog:
     except Exception:  # noqa: BLE001 - 读配置失败不该让整轮对话起不来
         logger.warning("读取 MCP 配置失败，本轮按未挂载处理", exc_info=True)
         raw_servers = []
+
+    # 绑定 CTF 题目的会话若未显式配置挂载名单，默认自动挂载已配置的 CTF2 官方远程 MCP
+    if not mounted and getattr(session, "challenge_id", None):
+        for srv in raw_servers:
+            name = str(srv.get("name") or "").strip()
+            url = str(srv.get("url") or "").strip().lower()
+            if name and (name == "ctf2-suvex" or "ctf2.dasctf.com/api/ai/v1/mcp" in url):
+                mounted.append(name)
+        if not mounted:
+            return catalog
 
     configs = {cfg.name: cfg for cfg in mcp_mod.parse_server_configs(raw_servers)}
 

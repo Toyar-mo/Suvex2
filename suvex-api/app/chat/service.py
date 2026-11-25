@@ -195,6 +195,25 @@ def create_session(
     return session
 
 
+def _default_ctf2_mcp_names(db: Session) -> list[str]:
+    """查找已配置的 CTF2 官方远程 MCP 名称，自动挂进题目会话。"""
+    try:
+        from app.kernel import service as kernel_service
+
+        servers = kernel_service.get_mcp_servers(db)
+    except Exception:  # noqa: BLE001
+        return []
+    names: list[str] = []
+    for srv in servers:
+        name = str(srv.get("name") or "").strip()
+        url = str(srv.get("url") or "").strip().lower()
+        if not name:
+            continue
+        if name == "ctf2-suvex" or "ctf2.dasctf.com/api/ai/v1/mcp" in url:
+            names.append(name)
+    return names
+
+
 def get_or_create_challenge_session(
     db: Session, *, created_by: str, challenge_id: str
 ) -> tuple[ChatSession, bool]:
@@ -224,6 +243,8 @@ def get_or_create_challenge_session(
     if challenge is None:
         raise ApiError.not_found("这道题")
 
+    default_mcps = _default_ctf2_mcp_names(db)
+
     existing = db.scalars(
         select(ChatSession)
         .where(
@@ -236,10 +257,14 @@ def get_or_create_challenge_session(
     if existing is not None:
         if existing.archived_at is not None:
             existing.archived_at = None
+        if not existing.mcp_server_names and default_mcps:
+            existing.mcp_server_names = default_mcps
         return existing, False
 
     session = create_session(db, created_by=created_by, title=challenge.title)
     session.challenge_id = challenge_id
+    if default_mcps:
+        session.mcp_server_names = default_mcps
     db.flush()
     return session, True
 

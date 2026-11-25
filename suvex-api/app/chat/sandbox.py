@@ -213,6 +213,22 @@ def _new_sandbox(session: ChatSession) -> Any:
     handed_over: Any = chat_attachments.handed_over_dir(session.id)
     try:
         handed_over.mkdir(parents=True, exist_ok=True)
+        # 若该会话绑定了 CTF 题目，把已下载到本地的题目附件同步到交接目录，
+        # 让对话沙箱可以直接在 `/work/attachments/` 分析二进制/压缩包/流量包。
+        if session.challenge_id:
+            import shutil
+            from app.kernel import attachments as kernel_attachments
+
+            chal_root = kernel_attachments.attachment_root(session.challenge_id)
+            if chal_root.is_dir():
+                for src in sorted(chal_root.iterdir()):
+                    if not src.is_file() or src.name.startswith("."):
+                        continue
+                    if src.name.endswith(kernel_attachments.FINGERPRINT_SUFFIX):
+                        continue
+                    dst = handed_over / src.name
+                    if not dst.exists():
+                        shutil.copy2(src, dst)
     except OSError:
         # 建不出来（磁盘满 / 权限）就退回"不挂"，并留日志：此时沙箱仍可用，
         # 只是看不见附件。静默失败不可接受 —— 那会让"附件没挂上"变成

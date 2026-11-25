@@ -1778,9 +1778,21 @@ async def _tool_list_challenges(ctx: _ToolContext, args: dict[str, Any]) -> str:
         return "库里没有符合条件的题目。"
     lines = [f"共 {len(rows)} 道题："]
     for challenge in rows:
+        env = kernel_service.latest_environment(ctx.db, challenge.id)
+        urls: list[str] = []
+        if env is not None:
+            if env.access_url:
+                urls.append(env.access_url)
+            for u in list(env.access_urls or []):
+                if u and u not in urls:
+                    urls.append(u)
+        env_hint = ""
+        if env is not None and urls:
+            env_hint = f" 靶机({env.status})={', '.join(urls)}"
+        remote_hint = f" remoteId={challenge.remote_id}" if challenge.remote_id else ""
         lines.append(
             f"- `{challenge.id}` {challenge.title or '(无标题)'}"
-            f" 状态={challenge.status}"
+            f" [{challenge.category or 'unknown'}] 状态={challenge.status}{remote_hint}{env_hint}"
         )
     return "\n".join(lines)
 
@@ -3786,6 +3798,72 @@ def _challenge_category(db: Session, session: ChatSession) -> str | None:
     return challenge.category if challenge is not None else None
 
 
+def _render_bound_challenge_section(db: Session, session: ChatSession) -> str:
+    """把会话绑定的 CTF 题目实时元数据与靶机入口注入系统提示词。
+
+    实测根因：此前对话页只注入了题型手册，没有给模型题目的 `access_url` / `remote_id`，
+    导致模型拿 `ctf2:<remote_id>` 乱猜 `<remote_id>.ctf2.dasctf.com`、探测 198.18.x.x Fake-IP
+    白跑上百轮，而真正的动态靶机 URL 明明就在 `suvex_environments` 表里。
+    """
+    if not session.challenge_id:
+        return ""
+    from app.kernel import service as kernel_service
+    from app.kernel.models import KernelChallenge
+
+    challenge = db.get(KernelChallenge, session.challenge_id)
+    if challenge is None:
+        return ""
+
+    env = kernel_service.latest_environment(db, challenge.id)
+    urls: list[str] = []
+    if env is not None:
+        if env.access_url:
+            urls.append(env.access_url)
+        for u in list(env.access_urls or []):
+            if u and u not in urls:
+                urls.append(u)
+
+    lines = [
+        "\n\n## 当前绑定 CTF 题目与靶机状态（服务端实时事实）",
+        f"- 本地题目 ID：`{challenge.id}`",
+        f"- 远端题目 ID (`remote_id`)：`{challenge.remote_id}`",
+        f"- 题目名称：{challenge.title or '(无标题)'}",
+        f"- 分类：{challenge.category or 'unknown'} · 状态：{challenge.status}",
+    ]
+    if challenge.score is not None:
+        lines.append(f"- 分值：{challenge.score} pts")
+    if env is not None and urls:
+        lines.append(f"- **动态靶机入口（状态={env.status}）**：{', '.join(urls)}")
+        if env.expires_at is not None:
+            lines.append(f"- 靶机到期时间：{env.expires_at.isoformat()}")
+    else:
+        lines.append(
+            "- **当前尚无运行中的动态靶机**：请直接调用已挂载的 `ctf2-suvex` MCP 工具启动靶机，"
+            "或告知用户点击上方「启动自动解题」拉起靶机。"
+        )
+    attachments = list(challenge.attachments or [])
+    if attachments:
+        names = [
+            str(item.get("name") or item.get("filename") or item.get("url") or "attachment")
+            for item in attachments
+            if isinstance(item, dict)
+        ]
+        if names:
+            lines.append(
+                f"- 题目附件（已同步到沙箱 `/work/attachments`）：{', '.join(names[:10])}"
+            )
+    if challenge.description:
+        desc = challenge.description.strip()
+        if len(desc) > 2000:
+            desc = desc[:2000] + "\n…（描述已截断）"
+        lines.append(f"- 题面描述：\n{desc}")
+    lines.append(
+        "- **严格约束**：禁止猜测 `<remote_id>.ctf2.dasctf.com`、禁止扫描 `198.18.0.0/15` Fake-IP 或宿主机局域网；"
+        "只能访问上方列出的真实靶机入口，或通过 `ctf2-suvex` MCP 获取最新靶机连接信息与提交 Flag。"
+    )
+    return "\n".join(lines)
+
+
 def _system_prompt_for(
     session: ChatSession,
     hinted_tools: list[str] | None = None,
@@ -3828,6 +3906,10 @@ def _system_prompt_for(
         todos=todo_store.list_todos(db, session.id) if db is not None else None,
         locale=locale,
     )
+    # 注入绑定题目的实时靶机地址与约束（每轮重读，确保靶机重启/续期后立即生效）
+    if db is not None and session.challenge_id:
+        prompt += _render_bound_challenge_section(db, session)
+
     # ★ v1.80：会话挂载的 MCP 工具。放在最后 —— 它比骨架更"这个对话专属"。
     #   原生模式下 schema 已在 `tools=` 里，这一段补的是"哪台连不上"；
     #   文本协议模式下它还是模型唯一能看到的工具清单。
