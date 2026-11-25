@@ -82,6 +82,8 @@ export function ScansPage() {
   const [selectedScan, setSelectedScan] = useState<ScanOut | null>(null)
   const [hints, setHints] = useState<HintOut[]>([])
   const [hintText, setHintText] = useState('')
+  const [postingHint, setPostingHint] = useState(false)
+  const [rerunning, setRerunning] = useState(false)
   const [writeup, setWriteup] = useState<WriteupOut | null>(null)
   const [loadingWriteup, setLoadingWriteup] = useState(false)
 
@@ -297,7 +299,27 @@ export function ScansPage() {
   }
 
   const handleRerun = async (scan: ScanOut) => {
+    if (rerunning) return
+    setRerunning(true)
     try {
+      // CTF2 自动解题壳不能走 /scans/{id}/rerun，自动路由回 CTF2 解题队列一键重解
+      if (scan.target?.startsWith('ctf2:')) {
+        const remoteId = scan.target.slice(5).trim()
+        const allChallenges = await api.getKernelChallenges()
+        const matched = allChallenges.find(
+          (c) => c.scanId === scan.id || (remoteId && c.remoteId === remoteId),
+        )
+        if (!matched) {
+          push('未在 CTF2 题库中找到对应题目，请前往「CTF 夺旗」页同步后再开解', 'error')
+          return
+        }
+        const res = await api.solveChallenge(matched.id)
+        push(res.message || `已将「${matched.title}」重新投入 CTF2 自动解题队列`, 'success')
+        await loadScans()
+        setSelectedScan(null)
+        return
+      }
+
       const created = await api.rerunScan(scan.id, {
         confirmed: true,
         statement: SCAN_AUTH_STATEMENT,
@@ -308,6 +330,8 @@ export function ScansPage() {
       void openDetail(created)
     } catch (err) {
       push(err instanceof ApiClientError ? err.message : '重跑失败', 'error')
+    } finally {
+      setRerunning(false)
     }
   }
 
@@ -323,7 +347,12 @@ export function ScansPage() {
   }
 
   const handlePostHint = async () => {
-    if (!selectedScan || !hintText.trim()) return
+    if (!selectedScan || !hintText.trim() || postingHint) return
+    if (selectedScan.status !== 'running' && selectedScan.status !== 'queued') {
+      push('当前任务已结束，无法注入线索；请先点击上方「重跑」重新启动后再注入', 'error')
+      return
+    }
+    setPostingHint(true)
     try {
       const created = await api.postScanHint(selectedScan.id, hintText.trim())
       setHints((prev) => [...prev, created])
@@ -331,6 +360,8 @@ export function ScansPage() {
       push('线索已注入，智能体将在下一回合读取', 'success')
     } catch (err) {
       push(err instanceof ApiClientError ? err.message : '发送线索失败', 'error')
+    } finally {
+      setPostingHint(false)
     }
   }
 
@@ -857,7 +888,12 @@ export function ScansPage() {
                     终止
                   </Button>
                 ) : (
-                  <Button size="sm" variant="secondary" onClick={() => void handleRerun(selectedScan)}>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    loading={rerunning}
+                    onClick={() => void handleRerun(selectedScan)}
+                  >
                     <RotateCcw className="h-3.5 w-3.5" />
                     重跑
                   </Button>
@@ -897,7 +933,11 @@ export function ScansPage() {
               <div>
                 <p className="text-ink-muted">技能范围</p>
                 <p className="mt-0.5 text-ink">
-                  {selectedScan.skills.map((s) => SKILL_LABELS[s] || s).join('、')}
+                  {selectedScan.skills.length > 0
+                    ? selectedScan.skills.map((s) => SKILL_LABELS[s] || s).join('、')
+                    : selectedScan.target?.startsWith('ctf2:')
+                      ? 'CTF2 自治求解'
+                      : '自动路由'}
                 </p>
               </div>
               <div>
@@ -916,12 +956,24 @@ export function ScansPage() {
             )}
 
             <div>
-              <h3 className="mb-2 text-xs font-semibold text-ink">人工线索注入</h3>
-              <div className="flex gap-2">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <h3 className="text-xs font-semibold text-ink">人工线索注入</h3>
+                {selectedScan.status !== 'running' && selectedScan.status !== 'queued' && (
+                  <span className="text-[11px] text-ink-muted">
+                    任务已结束 · 点上方「重跑」后可注入
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
                 <Input
                   value={hintText}
                   onChange={(e) => setHintText(e.target.value)}
-                  placeholder="补充业务提示或思路，运行中的智能体将在下回合读取…"
+                  disabled={selectedScan.status !== 'running' && selectedScan.status !== 'queued'}
+                  placeholder={
+                    selectedScan.status === 'running' || selectedScan.status === 'queued'
+                      ? '补充业务提示或思路，运行中的智能体将在下回合读取…'
+                      : '当前任务已结束，请先点击上方「重跑」再注入线索'
+                  }
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       e.preventDefault()
@@ -929,7 +981,16 @@ export function ScansPage() {
                     }
                   }}
                 />
-                <Button size="md" variant="secondary" onClick={() => void handlePostHint()}>
+                <Button
+                  size="md"
+                  variant="secondary"
+                  loading={postingHint}
+                  disabled={
+                    !hintText.trim() ||
+                    (selectedScan.status !== 'running' && selectedScan.status !== 'queued')
+                  }
+                  onClick={() => void handlePostHint()}
+                >
                   <Send className="h-3.5 w-3.5" />
                   注入
                 </Button>
