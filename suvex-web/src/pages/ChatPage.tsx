@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
-  Archive,
   ArrowDown,
   Bot,
   Check,
@@ -12,6 +11,7 @@ import {
   Cpu,
   Download,
   Flag,
+  Folder,
   FolderOpen,
   GitBranch,
   GitFork,
@@ -21,12 +21,11 @@ import {
   Minimize2,
   PanelLeft,
   Paperclip,
-  Pin,
   Play,
-  Plus,
-  Search,
   Send,
   ShieldAlert,
+  ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   Square,
   Terminal,
@@ -53,8 +52,10 @@ import type {
   ChatTurnRunOut,
   ProviderOut,
 } from '@/types/api'
-import { Badge, Button, Drawer, EmptyState, Select } from '@/components/ui/primitives'
+import { Badge, Button, Drawer, EmptyState, Modal, Select } from '@/components/ui/primitives'
 import { MarkdownView } from '@/components/ui/MarkdownView'
+import { SessionRail } from '@/components/chat/SessionRail'
+import { SessionSettingsModal } from '@/components/chat/SessionSettingsModal'
 import { cn } from '@/lib/cn'
 
 /* --------------------------------------------------------------------------
@@ -628,10 +629,13 @@ export function ChatPage() {
 
   const [sessions, setSessions] = useState<ChatSessionOut[]>([])
   const [railOpen, setRailOpen] = useState(true)
-  const [showArchived, setShowArchived] = useState(false)
-  const [searchQuery, setSearchQuery] = useState('')
   const [activeId, setActiveId] = useState<string | null>(searchParams.get('session'))
   const [detail, setDetail] = useState<ChatSessionDetailOut | null>(null)
+  const [settingsTarget, setSettingsTarget] = useState<ChatSessionOut | null>(null)
+  const [archiveTarget, setArchiveTarget] = useState<ChatSessionOut | null>(null)
+  const [purgeTarget, setPurgeTarget] = useState<ChatSessionOut | null>(null)
+  const [purgeAllOpen, setPurgeAllOpen] = useState(false)
+  const [confirmBusy, setConfirmBusy] = useState(false)
   const [contextInfo, setContextInfo] = useState<ChatContextOut | null>(null)
   const [todos, setTodos] = useState<ChatTodoOut[]>([])
   const [turns, setTurns] = useState<ChatTurnRunOut[]>([])
@@ -667,15 +671,17 @@ export function ChatPage() {
 
   const loadSessions = useCallback(async () => {
     try {
-      const list = await api.listChatSessions(showArchived)
+      // 始终加载包含归档的完整清单，让「进行中 / 已归档」双标签计数实时准确
+      const list = await api.listChatSessions(true)
       setSessions(list)
-      if (!activeId && list.length > 0 && searchParams.get('new') !== '1') {
-        setActiveId(list[0].id)
+      if (!activeId && searchParams.get('new') !== '1') {
+        const firstActive = list.find((s) => !s.archived) || list[0]
+        if (firstActive) setActiveId(firstActive.id)
       }
     } catch {
       // handled silently
     }
-  }, [activeId, searchParams, showArchived])
+  }, [activeId, searchParams])
 
   const loadDetail = useCallback(
     async (id: string) => {
@@ -815,12 +821,13 @@ export function ChatPage() {
     setShowScrollBottom(distFromBottom > 240)
   }
 
-  const filteredSessions = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase()
-    const base = showArchived ? sessions : sessions.filter((s) => !s.archived)
-    if (!q) return base
-    return base.filter((s) => s.title.toLowerCase().includes(q))
-  }, [sessions, searchQuery, showArchived])
+  const existingProjects = useMemo(() => {
+    const set = new Set<string>()
+    for (const s of sessions) {
+      if (s.project?.trim()) set.add(s.project.trim())
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'zh-CN'))
+  }, [sessions])
 
   const displayBlocks = useMemo(
     () => groupConversationMessages(detail?.messages || []),
@@ -926,26 +933,119 @@ export function ChatPage() {
     }
   }
 
+  const handleProviderChange = async (providerId: string) => {
+    setSelectedProviderId(providerId)
+    if (!activeId) return
+    try {
+      await api.updateChatSettings(activeId, { providerId: providerId || null })
+      await loadDetail(activeId)
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '保存会话模型失败', 'error')
+    }
+  }
+
+  const handleRenameSession = async (id: string, title: string) => {
+    try {
+      const updated = await api.renameChatSession(id, title)
+      setSessions((prev) => prev.map((x) => (x.id === id ? updated : x)))
+      if (detail?.id === id) {
+        setDetail((prev) => (prev ? { ...prev, title: updated.title } : prev))
+      }
+      push('会话已重命名', 'success')
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '重命名失败', 'error')
+    }
+  }
+
   const handleTogglePin = async (s: ChatSessionOut) => {
     try {
       const updated = await api.pinChatSession(s.id, !s.pinned)
       setSessions((prev) => prev.map((x) => (x.id === s.id ? updated : x)))
+      push(updated.pinned ? '已置顶会话' : '已取消置顶', 'success')
     } catch {
       push('操作失败', 'error')
     }
   }
 
-  const handleArchive = async (s: ChatSessionOut) => {
+  const handleConfirmArchive = async () => {
+    if (!archiveTarget) return
+    setConfirmBusy(true)
     try {
-      if (s.archived) {
-        await api.unarchiveChatSession(s.id)
-      } else {
-        await api.archiveChatSession(s.id)
-        if (activeId === s.id) setActiveId(null)
+      await api.archiveChatSession(archiveTarget.id)
+      if (activeId === archiveTarget.id) {
+        const nextActive = sessions.find((x) => !x.archived && x.id !== archiveTarget.id)
+        setActiveId(nextActive ? nextActive.id : null)
+        if (nextActive) setSearchParams({ session: nextActive.id }, { replace: true })
+        else setSearchParams({}, { replace: true })
       }
+      setArchiveTarget(null)
+      push('会话已移入已归档（沙箱与临时附件已清理）', 'default')
       await loadSessions()
-    } catch {
-      push('归档操作失败', 'error')
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '归档失败', 'error')
+    } finally {
+      setConfirmBusy(false)
+    }
+  }
+
+  const handleUnarchive = async (s: ChatSessionOut) => {
+    try {
+      await api.unarchiveChatSession(s.id)
+      push('已从归档恢复会话', 'success')
+      await loadSessions()
+      handleSelectSession(s.id)
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '恢复失败', 'error')
+    }
+  }
+
+  const handleConfirmPurge = async () => {
+    if (!purgeTarget) return
+    setConfirmBusy(true)
+    try {
+      await api.purgeChatSession(purgeTarget.id)
+      if (activeId === purgeTarget.id) {
+        setActiveId(null)
+        setDetail(null)
+        setSearchParams({}, { replace: true })
+      }
+      setPurgeTarget(null)
+      push('已彻底删除该会话及其全部记录', 'default')
+      await loadSessions()
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '彻底删除失败', 'error')
+    } finally {
+      setConfirmBusy(false)
+    }
+  }
+
+  const handleConfirmPurgeAllArchived = async () => {
+    setConfirmBusy(true)
+    try {
+      const res = await api.purgeArchivedChatSessions()
+      if (detail?.archived) {
+        setActiveId(null)
+        setDetail(null)
+        setSearchParams({}, { replace: true })
+      }
+      setPurgeAllOpen(false)
+      push(`已清空 ${res.deleted} 条归档会话（共 ${res.messages} 条消息）`, 'default')
+      await loadSessions()
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '清空归档失败', 'error')
+    } finally {
+      setConfirmBusy(false)
+    }
+  }
+
+  const handleForkSession = async (target: ChatSessionOut) => {
+    try {
+      const forked = await api.forkChatSession(target.id, {})
+      push(`已分叉出新分支：${forked.title}`, 'success')
+      await loadSessions()
+      handleSelectSession(forked.id)
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '分叉会话失败', 'error')
     }
   }
 
@@ -1127,105 +1227,22 @@ export function ChatPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-1 overflow-hidden bg-canvas">
-      {/* Left Session Rail (Viewport-Locked & Collapsible) */}
+      {/* Left Session Rail (Viewport-Locked, Grouped, Full Session Management) */}
       {railOpen && (
-        <aside className="hidden h-full w-64 shrink-0 flex-col overflow-hidden border-r border-line bg-surface lg:flex">
-          <div className="flex h-14 shrink-0 items-center justify-between border-b border-line px-3.5">
-            <h2 className="text-xs font-semibold tracking-wide text-ink">会话线程</h2>
-            <Button size="sm" variant="primary" onClick={handleNewSession}>
-              <Plus className="h-3.5 w-3.5" />
-              新建
-            </Button>
-          </div>
-
-          <div className="shrink-0 border-b border-line px-3 py-2.5">
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-ink-muted" />
-              <input
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="搜索历史会话..."
-                className="h-8 w-full rounded-lg border border-line bg-subtle pl-8 pr-3 text-xs text-ink placeholder:text-ink-muted focus:border-accent focus:outline-none"
-              />
-            </div>
-            <label className="mt-2 flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-muted hover:text-ink-secondary">
-              <input
-                type="checkbox"
-                checked={showArchived}
-                onChange={(e) => setShowArchived(e.target.checked)}
-                className="rounded border-line"
-              />
-              显示已归档会话
-            </label>
-          </div>
-
-          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
-            {filteredSessions.length === 0 ? (
-              <div className="py-12 text-center text-xs text-ink-muted">暂无会话</div>
-            ) : (
-              filteredSessions.map((s) => {
-                const active = s.id === activeId
-                return (
-                  <div
-                    key={s.id}
-                    onClick={() => handleSelectSession(s.id)}
-                    className={cn(
-                      'group relative flex cursor-pointer items-start justify-between gap-2 rounded-lg px-3 py-2.5 transition-colors',
-                      active
-                        ? 'bg-accent-soft/70 text-ink ring-1 ring-accent/25'
-                        : 'text-ink-secondary hover:bg-subtle hover:text-ink',
-                    )}
-                  >
-                    {active && (
-                      <span className="absolute bottom-2 left-0 top-2 w-0.5 rounded-r bg-accent" />
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5">
-                        {s.pinned && <Pin className="h-3 w-3 shrink-0 text-accent" />}
-                        {s.forkedFromSessionId && (
-                          <GitFork className="h-3 w-3 shrink-0 text-ink-muted" />
-                        )}
-                        {s.running && (
-                          <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent" />
-                        )}
-                        <span className="truncate text-xs font-medium text-ink">
-                          {s.title || '未命名会话'}
-                        </span>
-                      </div>
-                      <p className="mt-1 font-mono text-[10px] text-ink-muted">
-                        {s.messageCount} 条 · {formatRelativeTime(s.updatedAt)}
-                      </p>
-                    </div>
-                    <div className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          void handleTogglePin(s)
-                        }}
-                        className="rounded p-1 text-ink-muted hover:bg-wash hover:text-ink"
-                        title={s.pinned ? '取消置顶' : '置顶'}
-                      >
-                        <Pin className="h-3 w-3" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          void handleArchive(s)
-                        }}
-                        className="rounded p-1 text-ink-muted hover:bg-wash hover:text-ink"
-                        title={s.archived ? '取消归档' : '归档'}
-                      >
-                        <Archive className="h-3 w-3" />
-                      </button>
-                    </div>
-                  </div>
-                )
-              })
-            )}
-          </div>
-        </aside>
+        <SessionRail
+          sessions={sessions}
+          activeId={activeId}
+          onSelect={handleSelectSession}
+          onNew={() => void handleNewSession()}
+          onRename={handleRenameSession}
+          onTogglePin={handleTogglePin}
+          onRequestArchive={setArchiveTarget}
+          onUnarchive={handleUnarchive}
+          onRequestPurge={setPurgeTarget}
+          onRequestPurgeAllArchived={() => setPurgeAllOpen(true)}
+          onFork={handleForkSession}
+          onOpenSettings={setSettingsTarget}
+        />
       )}
 
       {/* Main Conversation Canvas (Pinned Header + Scrollable Stream + Pinned Composer) */}
@@ -1247,6 +1264,18 @@ export function ChatPage() {
                 <h1 className="truncate text-sm font-semibold text-ink">
                   {detail?.title || '安全智能体对话工作台'}
                 </h1>
+                {detail?.project && (
+                  <Badge className="shrink-0">
+                    <Folder className="h-2.5 w-2.5 text-accent" />
+                    {detail.project}
+                  </Badge>
+                )}
+                {detail?.requireApproval && (
+                  <Badge className="shrink-0 border-amber-300/70 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
+                    <ShieldCheck className="h-2.5 w-2.5" />
+                    人工审批
+                  </Badge>
+                )}
                 {detail?.challenge && (
                   <Badge className="shrink-0 border-indigo-200 bg-indigo-50 text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950/60 dark:text-indigo-300">
                     CTF · {detail.challenge.title}
@@ -1323,7 +1352,7 @@ export function ChatPage() {
                 variant="subtle"
                 align="right"
                 value={selectedProviderId}
-                onChange={setSelectedProviderId}
+                onChange={(v) => void handleProviderChange(v)}
                 icon={<Cpu className="h-3.5 w-3.5 text-ink-muted" />}
                 className="max-w-[164px]"
                 menuClassName="w-60"
@@ -1337,8 +1366,16 @@ export function ChatPage() {
               />
             )}
 
-            {activeId && (
+            {activeId && detail && (
               <>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setSettingsTarget(detail)}
+                  title="会话设置（重命名 / 项目分组 / 人工审批 / MCP 与技能挂载）"
+                >
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                </Button>
                 <Button size="sm" variant="ghost" onClick={() => void handleFork()} title="分叉新分支">
                   <GitFork className="h-3.5 w-3.5" />
                   分叉
@@ -1810,6 +1847,86 @@ export function ChatPage() {
           </div>
         )}
       </Drawer>
+
+      {/* Session Settings Modal (Project, Approval, MCP, Skills, Title) */}
+      <SessionSettingsModal
+        session={settingsTarget}
+        existingProjects={existingProjects}
+        onClose={() => setSettingsTarget(null)}
+        onSaved={async () => {
+          await loadSessions()
+          if (activeId) await loadDetail(activeId)
+        }}
+      />
+
+      {/* Archive Session Confirm Modal */}
+      <Modal
+        open={Boolean(archiveTarget)}
+        onClose={() => setArchiveTarget(null)}
+        title="归档会话"
+        subtitle={archiveTarget ? `确认归档「${archiveTarget.title || '未命名会话'}」？` : undefined}
+      >
+        <div className="space-y-4 text-xs text-ink-secondary">
+          <p className="leading-relaxed">
+            归档后该会话将移入「已归档」列表，对话消息记录仍会保留且可随时恢复或导出；但该会话关联的沙箱容器、临时附件与工作区产物文件会被立即清理释放。
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setArchiveTarget(null)}>
+              取消
+            </Button>
+            <Button variant="danger" loading={confirmBusy} onClick={() => void handleConfirmArchive()}>
+              确认归档
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Purge Single Session Confirm Modal */}
+      <Modal
+        open={Boolean(purgeTarget)}
+        onClose={() => setPurgeTarget(null)}
+        title="彻底删除会话"
+        subtitle={purgeTarget ? `即将永久删除「${purgeTarget.title || '未命名会话'}」` : undefined}
+      >
+        <div className="space-y-4 text-xs text-ink-secondary">
+          <p className="leading-relaxed text-red-600 dark:text-red-400">
+            此操作不可撤销：将从数据库物理删除该会话及其全部 {purgeTarget?.messageCount ?? 0} 条消息记录。
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setPurgeTarget(null)}>
+              取消
+            </Button>
+            <Button variant="danger" loading={confirmBusy} onClick={() => void handleConfirmPurge()}>
+              永久删除
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Purge All Archived Confirm Modal */}
+      <Modal
+        open={purgeAllOpen}
+        onClose={() => setPurgeAllOpen(false)}
+        title="一键清空全部已归档会话"
+      >
+        <div className="space-y-4 text-xs text-ink-secondary">
+          <p className="leading-relaxed text-red-600 dark:text-red-400">
+            此操作将永久物理删除全部 {sessions.filter((s) => s.archived).length} 条已归档会话及其所有消息与关联文件，不可恢复。
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setPurgeAllOpen(false)}>
+              取消
+            </Button>
+            <Button
+              variant="danger"
+              loading={confirmBusy}
+              onClick={() => void handleConfirmPurgeAllArchived()}
+            >
+              确认清空归档
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }

@@ -12,6 +12,7 @@ import type {
   ChatFileListOut,
   ChatFileOut,
   ChatLiveSnapshot,
+  ChatMcpStatusOut,
   ChatMessageOut,
   ChatPersonaOut,
   ChatSessionDetailOut,
@@ -329,11 +330,21 @@ export const api = {
       body: JSON.stringify({ pinned }),
     }),
   archiveChatSession: (sessionId: string) =>
-    request<void>(`/chat/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }),
+    request<ChatSessionOut>(`/chat/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }),
   unarchiveChatSession: (sessionId: string) =>
     request<ChatSessionOut>(`/chat/sessions/${encodeURIComponent(sessionId)}/unarchive`, {
       method: 'POST',
     }),
+  purgeChatSession: (sessionId: string) =>
+    request<ChatSessionOut>(`/chat/sessions/${encodeURIComponent(sessionId)}/purge`, {
+      method: 'POST',
+    }),
+  purgeArchivedChatSessions: () =>
+    request<{ deleted: number; messages: number }>('/chat/sessions/purge-archived', {
+      method: 'POST',
+    }),
+  getChatMcpStatus: (sessionId: string) =>
+    request<ChatMcpStatusOut>(`/chat/sessions/${encodeURIComponent(sessionId)}/mcp-status`),
   getChatContext: (sessionId: string) =>
     request<ChatContextOut>(`/chat/sessions/${encodeURIComponent(sessionId)}/context`),
   compactChatSession: (sessionId: string) =>
@@ -348,10 +359,13 @@ export const api = {
   updateChatSettings: (
     sessionId: string,
     payload: {
+      project?: string | null
       providerId?: string | null
       persona?: string | null
       agentProfileId?: string | null
       requireApproval?: boolean
+      skillNames?: string[] | null
+      mcpServerNames?: string[] | null
     },
   ) =>
     request<ChatSessionOut>(`/chat/sessions/${encodeURIComponent(sessionId)}/settings`, {

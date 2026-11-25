@@ -301,9 +301,22 @@ export interface ChatSessionOut {
   agentProfileId?: string | null
   providerId: string | null
   requireApproval: boolean
+  skillNames?: string[] | null
+  mcpServerNames?: string[] | null
   forkedFromSessionId?: string | null
   forkedFromSeq?: number | null
   branchSummary?: string | null
+}
+
+export interface ChatMcpStatusOut {
+  mountedCount: number
+  connectedCount: number
+  servers: Array<{
+    name: string
+    connected: boolean
+    toolCount: number
+    reason: string | null
+  }>
 }
 
 export interface ChatMessageOut {
