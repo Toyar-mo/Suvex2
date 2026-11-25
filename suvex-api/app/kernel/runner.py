@@ -8964,6 +8964,7 @@ async def _run_worker(
             challenge.status = KernelChallengeStatus.FAILED.value
             challenge.last_error = _safe_text(exc.message)
             ctf2_events.emit_abandoned(db, challenge, reason=exc.message)
+            ctf2_events.finalize_solve_scan(db, challenge)
             db.commit()
             return
         # ★★ 这道题背后有没有一个 CTF2 平台（v0.43）。
@@ -9103,6 +9104,7 @@ async def _run_worker(
                 ctf2_events.emit_abandoned(
                     db, blocked, reason=PLATFORM_ALREADY_SOLVED_MESSAGE
                 )
+                ctf2_events.finalize_solve_scan(db, blocked)
                 db.commit()
                 logger.info(
                     "平台显示这题已被本队伍解出（且不是我们解的），跳过解题：%s",

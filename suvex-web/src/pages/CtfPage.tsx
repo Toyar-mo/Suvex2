@@ -241,6 +241,9 @@ export function CtfPage() {
       )
       setSelectedIds([])
       await loadAll()
+      if (action === 'solve') {
+        window.setTimeout(() => void loadAll(), 2500)
+      }
     } catch (err) {
       push(err instanceof ApiClientError ? err.message : '批量操作失败', 'error')
     }
@@ -384,6 +387,8 @@ export function CtfPage() {
       const res = await api.solveChallenge(chal.id)
       push(res.message || `已将「${chal.title}」投入自动解题队列`, 'success')
       await loadAll()
+      // 预检（如平台侧已解出 ALREADY_SOLVED）会在 1-2 秒内异步回写状态，补充一次快速刷新
+      window.setTimeout(() => void loadAll(), 2500)
     } catch (err) {
       push(err instanceof ApiClientError ? err.message : '启动解题失败', 'error')
     }
@@ -843,6 +848,24 @@ export function CtfPage() {
                     <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50/70 px-2.5 py-1.5 font-mono text-[11px] text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-200">
                       <span className="block truncate">
                         {chal.confirmedFlag || chal.candidateFlag}
+                      </span>
+                    </div>
+                  )}
+
+                  {!isSolving && chal.lastError && !chal.confirmedFlag && (
+                    <div
+                      title={chal.lastError}
+                      className={cn(
+                        'mt-3 rounded-lg border px-2.5 py-1.5 text-[11px] leading-snug',
+                        chal.lastError.includes('已被本队伍解出') || chal.lastError.includes('ALREADY_SOLVED')
+                          ? 'border-amber-200 bg-amber-50/80 text-amber-800 dark:border-amber-900/70 dark:bg-amber-950/45 dark:text-amber-300'
+                          : 'border-red-200/80 bg-red-50/70 text-red-700 dark:border-red-900/70 dark:bg-red-950/40 dark:text-red-300',
+                      )}
+                    >
+                      <span className="line-clamp-2">
+                        {chal.lastError.includes('已被本队伍解出') || chal.lastError.includes('ALREADY_SOLVED')
+                          ? '平台侧已解出（已自动跳过，不重复消耗额度）'
+                          : chal.lastError}
                       </span>
                     </div>
                   )}

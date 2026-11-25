@@ -711,6 +711,8 @@ def finalize_solve_scan(db: Session, challenge) -> None:  # noqa: ANN001
 
     solved = challenge.status == KernelChallengeStatus.SOLVED.value
     scan.status = ScanStatus.COMPLETED.value if solved else ScanStatus.FAILED.value
+    if not solved and getattr(challenge, "last_error", None):
+        scan.failure_reason = str(challenge.last_error)[:2000]
     # ★ 把这一轮拿到的 flag 记在壳上（**候选也记**）。
     #
     # 扫描列表只有 completed/failed 两档，而 CTF2 的「跑完但没被平台确认」

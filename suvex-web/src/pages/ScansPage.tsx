@@ -65,6 +65,7 @@ export function ScansPage() {
 
   const [scans, setScans] = useState<ScanOut[]>([])
   const [queue, setQueue] = useState<ScanStatsOut | null>(null)
+  const [ctfQueue, setCtfQueue] = useState<{ running: number; limit: number; queued: number } | null>(null)
   const [providers, setProviders] = useState<ProviderOut[]>([])
   const [loading, setLoading] = useState(true)
   const [statusFilter, setStatusFilter] = useState<string>('')
@@ -102,7 +103,7 @@ export function ScansPage() {
 
   const loadScans = useCallback(async () => {
     try {
-      const [list, q] = await Promise.all([
+      const [list, q, cq] = await Promise.all([
         api.listScans({
           status: statusFilter || undefined,
           q: query.trim() || undefined,
@@ -110,9 +111,11 @@ export function ScansPage() {
           dir: 'desc',
         }),
         api.getScanQueue().catch(() => null),
+        api.getKernelQueue().catch(() => null),
       ])
       setScans(list)
       setQueue(q)
+      setCtfQueue(cq)
 
       const urlId = searchParams.get('id')
       if (urlId) {
@@ -466,9 +469,14 @@ export function ScansPage() {
         </div>
 
         <div className="flex items-center gap-3">
-          {queue && (
+          {(queue || ctfQueue) && (
             <span className="hidden font-mono text-xs text-ink-muted md:inline">
-              并发 {queue.running}/{queue.limit} · 排队 {queue.queued}
+              {queue ? `扫描并发 ${queue.running}/${queue.limit}` : ''}
+              {queue && ctfQueue ? ' · ' : ''}
+              {ctfQueue ? `CTF2 解题 ${ctfQueue.running}/${ctfQueue.limit}` : ''}
+              {(queue?.queued || 0) + (ctfQueue?.queued || 0) > 0
+                ? ` · 排队 ${(queue?.queued || 0) + (ctfQueue?.queued || 0)}`
+                : ''}
             </span>
           )}
           <div className="relative w-full sm:w-64">
