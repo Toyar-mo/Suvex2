@@ -14,19 +14,27 @@
 :root,
 [data-theme='light'] {
   --bg-canvas: #faf9f7;
+  --bg-canvas-rgb: 250 249 247;
   --bg-surface: #ffffff;
+  --bg-surface-rgb: 255 255 255;
   --bg-subtle: #f4f2ee;
+  --bg-subtle-rgb: 244 242 238;
   --bg-wash: #ebe8e1;
+  --bg-wash-rgb: 235 232 225;
 
   --text-primary: #141413;
   --text-secondary: #55534c;
   --text-muted: #8a867d;
 
   --border-default: #e6e2da;
+  --border-default-rgb: 230 226 218;
   --border-strong: #d3cec3;
+  --border-strong-rgb: 211 206 195;
   --border-subtle: #efece6;
+  --border-subtle-rgb: 239 236 230;
 
   --accent: #4f46e5;
+  --accent-rgb: 79 70 229;
   --accent-soft: #eef2ff;
   --accent-ink: #3730a3;
 
@@ -39,19 +47,27 @@
 
 [data-theme='dark'] {
   --bg-canvas: #0d0e12;
+  --bg-canvas-rgb: 13 14 18;
   --bg-surface: #15161c;
+  --bg-surface-rgb: 21 22 28;
   --bg-subtle: #111217;
+  --bg-subtle-rgb: 17 18 23;
   --bg-wash: #1f2029;
+  --bg-wash-rgb: 31 32 41;
 
   --text-primary: #f2f2f5;
   --text-secondary: #b4b6c2;
   --text-muted: #848794;
 
   --border-default: #262833;
+  --border-default-rgb: 38 40 51;
   --border-strong: #373947;
+  --border-strong-rgb: 55 57 71;
   --border-subtle: #1c1e26;
+  --border-subtle-rgb: 28 30 38;
 
   --accent: #818cf8;
+  --accent-rgb: 129 140 248;
   --accent-soft: rgba(99, 102, 241, 0.16);
   --accent-ink: #c7d2fe;
 
@@ -168,7 +184,7 @@
 .spotlight-card:hover::before {
   opacity: 1;
 }
-.spotlight-card > * {
+:where(.spotlight-card > :not(.absolute)) {
   position: relative;
   z-index: 1;
 }
