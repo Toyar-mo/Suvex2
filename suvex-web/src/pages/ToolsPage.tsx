@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import {
   CheckCircle2,
+  Code2,
+  KeyRound,
+  Pencil,
   Plug,
   Plus,
   RefreshCw,
   Search,
+  Sparkles,
   Terminal,
   Trash2,
   Wrench,
@@ -28,10 +32,94 @@ import {
   Modal,
   PageHeader,
   Skeleton,
+  Textarea,
 } from '@/components/ui/primitives'
 import { cn } from '@/lib/cn'
 
 type ToolsTab = 'builtin' | 'mcp' | 'recipes'
+type McpModalMode = 'form' | 'json'
+
+function parseKeyValueLines(raw: string, separator: ':' | '='): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const idx = trimmed.indexOf(separator)
+    if (idx <= 0) continue
+    const key = trimmed.slice(0, idx).trim()
+    const value = trimmed.slice(idx + 1).trim()
+    if (key) out[key] = value
+  }
+  return out
+}
+
+function parseMcpJsonImport(rawJson: string, bearerToken: string): McpServerIn[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(rawJson)
+  } catch {
+    throw new Error('JSON 格式不合法，请检查括号与引号。')
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('请粘贴包含 mcpServers 的 JSON 对象。')
+  }
+  const obj = parsed as Record<string, unknown>
+  const mapSource =
+    obj.mcpServers && typeof obj.mcpServers === 'object' && !Array.isArray(obj.mcpServers)
+      ? (obj.mcpServers as Record<string, unknown>)
+      : obj
+
+  const entries: McpServerIn[] = []
+  const cleanedBearer = bearerToken.trim()
+
+  for (const [key, val] of Object.entries(mapSource)) {
+    if (!val || typeof val !== 'object' || Array.isArray(val)) continue
+    const cfg = val as Record<string, unknown>
+    const rawType = String(cfg.type || (cfg.url ? 'http' : 'stdio')).toLowerCase()
+    const type: 'http' | 'stdio' = rawType === 'http' || rawType === 'streamable-http' ? 'http' : 'stdio'
+    const url = typeof cfg.url === 'string' ? cfg.url.trim() : ''
+    const command = typeof cfg.command === 'string' ? cfg.command.trim() : ''
+    const args = Array.isArray(cfg.args) ? cfg.args.map((a) => String(a)) : []
+    const headers: Record<string, string> = {}
+    if (cfg.headers && typeof cfg.headers === 'object' && !Array.isArray(cfg.headers)) {
+      for (const [hk, hv] of Object.entries(cfg.headers as Record<string, unknown>)) {
+        if (hk.trim()) headers[hk.trim()] = String(hv ?? '')
+      }
+    }
+    if (type === 'http' && cleanedBearer && !headers.Authorization && !headers.authorization) {
+      headers.Authorization = cleanedBearer.toLowerCase().startsWith('bearer ')
+        ? cleanedBearer
+        : `Bearer ${cleanedBearer}`
+    }
+    const env: Record<string, string> = {}
+    if (cfg.env && typeof cfg.env === 'object' && !Array.isArray(cfg.env)) {
+      for (const [ek, ev] of Object.entries(cfg.env as Record<string, unknown>)) {
+        if (ek.trim()) env[ek.trim()] = String(ev ?? '')
+      }
+    }
+    entries.push({
+      name: key.trim(),
+      type,
+      command: type === 'stdio' ? command : '',
+      args: type === 'stdio' ? args : [],
+      env,
+      url: type === 'http' ? url : '',
+      headers,
+      preserveEnv: false,
+      preserveHeaders: false,
+      notes: typeof cfg.notes === 'string' ? cfg.notes : '',
+      allowedTools: Array.isArray(cfg.allowedTools)
+        ? cfg.allowedTools.map((t) => String(t))
+        : null,
+      callTimeout: typeof cfg.callTimeout === 'number' ? cfg.callTimeout : null,
+    })
+  }
+
+  if (entries.length === 0) {
+    throw new Error('未在 JSON 中找到有效的 MCP 服务配置（期望 {"mcpServers": {"name": {...}}}）。')
+  }
+  return entries
+}
 
 export function ToolsPage() {
   const { push } = useToast()
@@ -44,16 +132,25 @@ export function ToolsPage() {
   const [probing, setProbing] = useState(false)
   const [recipeQuery, setRecipeQuery] = useState('')
   const [testingMcp, setTestingMcp] = useState<string | null>(null)
+  const [mountingCtf2, setMountingCtf2] = useState(false)
 
-  // Add MCP modal
+  // Add / Edit MCP modal
   const [mcpOpen, setMcpOpen] = useState(false)
+  const [mcpModalMode, setMcpModalMode] = useState<McpModalMode>('form')
+  const [editingServer, setEditingServer] = useState<McpServerOut | null>(null)
   const [mcpName, setMcpName] = useState('')
   const [mcpType, setMcpType] = useState<'http' | 'stdio'>('http')
   const [mcpUrl, setMcpUrl] = useState('')
+  const [mcpHeadersRaw, setMcpHeadersRaw] = useState('')
   const [mcpCmd, setMcpCmd] = useState('')
   const [mcpArgs, setMcpArgs] = useState('')
+  const [mcpEnvRaw, setMcpEnvRaw] = useState('')
+  const [mcpTimeout, setMcpTimeout] = useState('')
   const [mcpNotes, setMcpNotes] = useState('')
+  const [mcpJsonRaw, setMcpJsonRaw] = useState('')
+  const [mcpJsonBearer, setMcpJsonBearer] = useState('')
   const [savingMcp, setSavingMcp] = useState(false)
+  const [testingDraft, setTestingDraft] = useState(false)
 
   const loadAll = useCallback(async () => {
     setLoading(true)
@@ -110,39 +207,144 @@ export function ToolsPage() {
     callTimeout: s.callTimeout,
   })
 
-  const handleAddMcp = async (e: FormEvent) => {
-    e.preventDefault()
-    if (!mcpName.trim()) return
-    const entry: McpServerIn = {
+  const openAddMcpModal = (mode: McpModalMode = 'form') => {
+    setEditingServer(null)
+    setMcpModalMode(mode)
+    setMcpName('')
+    setMcpType('http')
+    setMcpUrl('')
+    setMcpHeadersRaw('')
+    setMcpCmd('')
+    setMcpArgs('')
+    setMcpEnvRaw('')
+    setMcpTimeout('')
+    setMcpNotes('')
+    setMcpJsonRaw('')
+    setMcpJsonBearer('')
+    setMcpOpen(true)
+  }
+
+  const openEditMcpModal = (s: McpServerOut) => {
+    setEditingServer(s)
+    setMcpModalMode('form')
+    setMcpName(s.name)
+    setMcpType(s.type === 'http' ? 'http' : 'stdio')
+    setMcpUrl(s.url || '')
+    setMcpHeadersRaw('')
+    setMcpCmd(s.command || '')
+    setMcpArgs((s.args || []).join(' '))
+    setMcpEnvRaw('')
+    setMcpTimeout(s.callTimeout ? String(s.callTimeout) : '')
+    setMcpNotes(s.notes || '')
+    setMcpOpen(true)
+  }
+
+  const buildFormEntry = (): McpServerIn => {
+    const parsedHeaders = parseKeyValueLines(mcpHeadersRaw, ':')
+    const parsedEnv = parseKeyValueLines(mcpEnvRaw, '=')
+    const hasNewHeaders = Object.keys(parsedHeaders).length > 0
+    const hasNewEnv = Object.keys(parsedEnv).length > 0
+    const timeoutVal = mcpTimeout.trim() ? Number(mcpTimeout.trim()) : null
+    return {
       name: mcpName.trim(),
       type: mcpType,
       command: mcpType === 'stdio' ? mcpCmd.trim() : '',
       args: mcpType === 'stdio' && mcpArgs.trim() ? mcpArgs.trim().split(/\s+/) : [],
-      env: {},
+      env: parsedEnv,
       url: mcpType === 'http' ? mcpUrl.trim() : '',
-      headers: {},
-      preserveEnv: false,
-      preserveHeaders: false,
+      headers: parsedHeaders,
+      preserveEnv: Boolean(editingServer?.hasEnv && !hasNewEnv),
+      preserveHeaders: Boolean(editingServer?.hasHeaders && !hasNewHeaders),
       notes: mcpNotes.trim(),
-      allowedTools: null,
-      callTimeout: null,
+      allowedTools: editingServer?.allowedTools ?? null,
+      callTimeout: timeoutVal && timeoutVal > 0 ? timeoutVal : null,
     }
+  }
+
+  const handleTestDraft = async () => {
+    setTestingDraft(true)
+    try {
+      const target =
+        mcpModalMode === 'json'
+          ? parseMcpJsonImport(mcpJsonRaw, mcpJsonBearer)[0]
+          : buildFormEntry()
+      const res = await api.testMcpServer(target)
+      if (res.ok) {
+        push(`试连成功（${res.elapsedMs}ms），发现 ${res.tools.length} 个工具`, 'success')
+      } else {
+        push(`试连失败：${res.reason}`, 'error')
+      }
+    } catch (err) {
+      push(
+        err instanceof ApiClientError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : '试连失败',
+        'error',
+      )
+    } finally {
+      setTestingDraft(false)
+    }
+  }
+
+  const handleSaveMcpModal = async (e: FormEvent) => {
+    e.preventDefault()
     setSavingMcp(true)
     try {
-      const nextList = [...mcpServers.map(toMcpIn), entry]
-      const res = await api.saveMcpServers(nextList)
+      let incoming: McpServerIn[]
+      if (mcpModalMode === 'json') {
+        incoming = parseMcpJsonImport(mcpJsonRaw, mcpJsonBearer)
+      } else {
+        if (!mcpName.trim()) {
+          setSavingMcp(false)
+          return
+        }
+        incoming = [buildFormEntry()]
+      }
+
+      const incomingNames = new Set(incoming.map((item) => item.name))
+      const baseList = mcpServers
+        .filter((s) => {
+          if (editingServer && s.name === editingServer.name) return false
+          return !incomingNames.has(s.name)
+        })
+        .map(toMcpIn)
+
+      const res = await api.saveMcpServers([...baseList, ...incoming])
       setMcpServers(res.servers)
       setMcpOpen(false)
-      setMcpName('')
-      setMcpUrl('')
-      setMcpCmd('')
-      setMcpArgs('')
-      setMcpNotes('')
-      push('MCP 服务已保存', 'success')
+      push(
+        incoming.length > 1
+          ? `已导入并保存 ${incoming.length} 条 MCP 连接`
+          : `MCP 服务 ${incoming[0].name} 已保存`,
+        'success',
+      )
     } catch (err) {
-      push(err instanceof ApiClientError ? err.message : '保存 MCP 服务失败', 'error')
+      push(
+        err instanceof ApiClientError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : '保存 MCP 服务失败',
+        'error',
+      )
     } finally {
       setSavingMcp(false)
+    }
+  }
+
+  const handleMountCtf2Mcp = async () => {
+    setMountingCtf2(true)
+    try {
+      const res = await api.mountCtf2Mcp()
+      push(res.message, res.test.ok ? 'success' : 'error')
+      const fresh = await api.getMcpServers().catch(() => ({ servers: mcpServers }))
+      setMcpServers(fresh.servers)
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '挂载 CTF2 MCP 失败', 'error')
+    } finally {
+      setMountingCtf2(false)
     }
   }
 
@@ -208,7 +410,7 @@ export function ToolsPage() {
       <PageHeader
         eyebrow="Three-Layer Capabilities"
         title="工具与 MCP 管理"
-        description="三层能力清晰解耦：内置动作开关、外部 MCP 服务试连、以及沙箱镜像内置命令配方探测。"
+        description="三层能力清晰解耦：内置动作开关、外部 HTTP/stdio MCP 服务（支持自定义 Header 与 JSON 导入）、以及沙箱镜像内置命令配方探测。"
         actions={
           <>
             <Button variant="secondary" size="sm" onClick={() => void loadAll()}>
@@ -216,10 +418,25 @@ export function ToolsPage() {
               刷新
             </Button>
             {tab === 'mcp' && (
-              <Button variant="primary" size="sm" onClick={() => setMcpOpen(true)}>
-                <Plus className="h-3.5 w-3.5" />
-                添加 MCP 连接
-              </Button>
+              <>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  loading={mountingCtf2}
+                  onClick={() => void handleMountCtf2Mcp()}
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  一键挂载 CTF2 MCP
+                </Button>
+                <Button variant="secondary" size="sm" onClick={() => openAddMcpModal('json')}>
+                  <Code2 className="h-3.5 w-3.5" />
+                  JSON 导入
+                </Button>
+                <Button variant="primary" size="sm" onClick={() => openAddMcpModal('form')}>
+                  <Plus className="h-3.5 w-3.5" />
+                  添加 MCP 连接
+                </Button>
+              </>
             )}
             {tab === 'recipes' && (
               <Button variant="primary" size="sm" loading={probing} onClick={() => void handleProbeRecipes()}>
@@ -317,12 +534,23 @@ export function ToolsPage() {
           <EmptyState
             icon={<Plug className="h-5 w-5" />}
             title="尚未配置外部 MCP 服务"
-            description="可挂载 HTTP 或 stdio MCP 工具服务器，扩展智能体的外部威胁情报、代码分析或资产查询能力。"
+            description="可直接从已绑定的 CTF2 账号一键挂载官方远程 HTTP MCP（ctf2-suvex），或粘贴标准 mcpServers JSON / 手动添加带 Authorization 请求头的远程 MCP 服务。"
             action={
-              <Button variant="primary" size="sm" onClick={() => setMcpOpen(true)}>
-                <Plus className="h-3.5 w-3.5" />
-                添加 MCP 连接
-              </Button>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  loading={mountingCtf2}
+                  onClick={() => void handleMountCtf2Mcp()}
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  一键挂载 ctf2-suvex MCP
+                </Button>
+                <Button variant="secondary" size="sm" onClick={() => openAddMcpModal('json')}>
+                  <Code2 className="h-3.5 w-3.5" />
+                  粘贴 JSON 导入
+                </Button>
+              </div>
             }
           />
         ) : (
@@ -330,9 +558,23 @@ export function ToolsPage() {
             {mcpServers.map((s) => (
               <Card key={s.name} className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <span className="font-mono text-sm font-semibold text-ink">{s.name}</span>
                     <Badge className="font-mono uppercase">{s.type}</Badge>
+                    {s.hasHeaders && (
+                      <Badge className="border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300">
+                        <KeyRound className="mr-1 h-2.5 w-2.5" />
+                        已配置请求头
+                      </Badge>
+                    )}
+                    {s.hasEnv && (
+                      <Badge className="border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300">
+                        已配置环境变量
+                      </Badge>
+                    )}
+                    {s.callTimeout && (
+                      <Badge className="font-mono">{s.callTimeout}s</Badge>
+                    )}
                   </div>
                   <p className="mt-1 truncate font-mono text-xs text-ink-muted">
                     {s.type === 'http' ? s.url : `${s.command} ${s.args.join(' ')}`}
@@ -349,7 +591,10 @@ export function ToolsPage() {
                     <Zap className="h-3.5 w-3.5" />
                     试连
                   </Button>
-                  <Button size="sm" variant="ghost" onClick={() => void handleDeleteMcp(s.name)}>
+                  <Button size="sm" variant="ghost" onClick={() => openEditMcpModal(s)} title="编辑连接">
+                    <Pencil className="h-3.5 w-3.5 text-ink-muted" />
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => void handleDeleteMcp(s.name)} title="删除连接">
                     <Trash2 className="h-3.5 w-3.5 text-ink-muted hover:text-red-600" />
                   </Button>
                 </div>
@@ -359,7 +604,7 @@ export function ToolsPage() {
         )
       ) : (
         <div>
-          <div className="mb-4 relative max-w-sm">
+          <div className="relative mb-4 max-w-sm">
             <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-ink-muted" />
             <Input
               value={recipeQuery}
@@ -399,79 +644,215 @@ export function ToolsPage() {
         </div>
       )}
 
-      <Modal open={mcpOpen} onClose={() => setMcpOpen(false)} title="添加外部 MCP 服务">
-        <form onSubmit={handleAddMcp} className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-ink-secondary">连接名称</label>
-              <Input
-                value={mcpName}
-                onChange={(e) => setMcpName(e.target.value)}
-                placeholder="threat-intel"
-                className="font-mono"
-                required
-              />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-ink-secondary">传输方式</label>
-              <select
-                value={mcpType}
-                onChange={(e) => setMcpType(e.target.value as 'http' | 'stdio')}
-                className="h-9 w-full rounded-lg border border-line bg-surface px-3 text-xs text-ink"
-              >
-                <option value="http">HTTP / Streamable</option>
-                <option value="stdio">本地 stdio 进程</option>
-              </select>
-            </div>
+      <Modal
+        open={mcpOpen}
+        onClose={() => setMcpOpen(false)}
+        title={editingServer ? `编辑 MCP 服务 · ${editingServer.name}` : '添加外部 MCP 服务'}
+        subtitle="支持远程 Streamable-HTTP MCP（含 Authorization Bearer 请求头）与本地 stdio 进程"
+        maxWidth="max-w-xl"
+      >
+        {!editingServer && (
+          <div className="mb-4 flex items-center gap-1.5 rounded-lg border border-line bg-subtle p-1 text-xs">
+            <button
+              type="button"
+              onClick={() => setMcpModalMode('form')}
+              className={cn(
+                'flex-1 rounded-md px-3 py-1.5 font-medium transition-colors',
+                mcpModalMode === 'form'
+                  ? 'bg-surface text-ink shadow-xs'
+                  : 'text-ink-secondary hover:text-ink',
+              )}
+            >
+              表单配置
+            </button>
+            <button
+              type="button"
+              onClick={() => setMcpModalMode('json')}
+              className={cn(
+                'flex-1 rounded-md px-3 py-1.5 font-medium transition-colors',
+                mcpModalMode === 'json'
+                  ? 'bg-surface text-ink shadow-xs'
+                  : 'text-ink-secondary hover:text-ink',
+              )}
+            >
+              JSON 粘贴导入
+            </button>
           </div>
+        )}
 
-          {mcpType === 'http' ? (
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-ink-secondary">服务 URL</label>
-              <Input
-                value={mcpUrl}
-                onChange={(e) => setMcpUrl(e.target.value)}
-                placeholder="http://127.0.0.1:9000/mcp"
-                className="font-mono"
-                required
-              />
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 gap-3">
+        <form onSubmit={handleSaveMcpModal} className="space-y-4">
+          {mcpModalMode === 'json' && !editingServer ? (
+            <>
               <div>
-                <label className="mb-1.5 block text-xs font-medium text-ink-secondary">命令</label>
-                <Input
-                  value={mcpCmd}
-                  onChange={(e) => setMcpCmd(e.target.value)}
-                  placeholder="npx"
-                  className="font-mono"
+                <label className="mb-1.5 block text-xs font-medium text-ink-secondary">
+                  mcpServers JSON 配置
+                </label>
+                <Textarea
+                  rows={8}
+                  value={mcpJsonRaw}
+                  onChange={(e) => setMcpJsonRaw(e.target.value)}
+                  className="font-mono text-xs"
+                  placeholder={`{\n  "mcpServers": {\n    "ctf2-suvex": {\n      "type": "http",\n      "url": "https://ctf2.dasctf.com/api/ai/v1/mcp"\n    }\n  }\n}`}
                   required
                 />
               </div>
               <div>
-                <label className="mb-1.5 block text-xs font-medium text-ink-secondary">参数（空格分隔）</label>
+                <label className="mb-1.5 block text-xs font-medium text-ink-secondary">
+                  Bearer Token（可选，自动注入 Authorization 请求头）
+                </label>
                 <Input
-                  value={mcpArgs}
-                  onChange={(e) => setMcpArgs(e.target.value)}
-                  placeholder="-y @org/mcp-server"
-                  className="font-mono"
+                  type="password"
+                  value={mcpJsonBearer}
+                  onChange={(e) => setMcpJsonBearer(e.target.value)}
+                  placeholder="粘贴 $CTF2_AGENT_TOKEN（如 JSON 里未写 headers）"
+                  className="font-mono text-xs"
                 />
               </div>
-            </div>
+            </>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium text-ink-secondary">连接名称</label>
+                  <Input
+                    value={mcpName}
+                    onChange={(e) => setMcpName(e.target.value)}
+                    placeholder="ctf2-suvex"
+                    className="font-mono"
+                    disabled={Boolean(editingServer)}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium text-ink-secondary">传输方式</label>
+                  <select
+                    value={mcpType}
+                    onChange={(e) => setMcpType(e.target.value as 'http' | 'stdio')}
+                    className="h-9 w-full rounded-lg border border-line bg-surface px-3 text-xs text-ink"
+                  >
+                    <option value="http">HTTP / Streamable</option>
+                    <option value="stdio">本地 stdio 进程</option>
+                  </select>
+                </div>
+              </div>
+
+              {mcpType === 'http' ? (
+                <>
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-ink-secondary">服务 URL</label>
+                    <Input
+                      value={mcpUrl}
+                      onChange={(e) => setMcpUrl(e.target.value)}
+                      placeholder="https://ctf2.dasctf.com/api/ai/v1/mcp"
+                      className="font-mono text-xs"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-ink-secondary">
+                      HTTP 请求头（每行一条 `Header: Value`）
+                    </label>
+                    <Textarea
+                      rows={3}
+                      value={mcpHeadersRaw}
+                      onChange={(e) => setMcpHeadersRaw(e.target.value)}
+                      placeholder="Authorization: Bearer your_agent_token_here"
+                      className="font-mono text-xs"
+                    />
+                    {editingServer?.hasHeaders && (
+                      <p className="mt-1 text-[11px] text-ink-muted">
+                        当前已保存加密请求头：留空保存将保留原请求头，输入新内容将覆盖。
+                      </p>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="mb-1.5 block text-xs font-medium text-ink-secondary">命令</label>
+                      <Input
+                        value={mcpCmd}
+                        onChange={(e) => setMcpCmd(e.target.value)}
+                        placeholder="npx"
+                        className="font-mono"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1.5 block text-xs font-medium text-ink-secondary">参数（空格分隔）</label>
+                      <Input
+                        value={mcpArgs}
+                        onChange={(e) => setMcpArgs(e.target.value)}
+                        placeholder="-y @org/mcp-server"
+                        className="font-mono"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-ink-secondary">
+                      环境变量（每行一条 `KEY=VALUE`，可选）
+                    </label>
+                    <Textarea
+                      rows={3}
+                      value={mcpEnvRaw}
+                      onChange={(e) => setMcpEnvRaw(e.target.value)}
+                      placeholder="API_TOKEN=..."
+                      className="font-mono text-xs"
+                    />
+                    {editingServer?.hasEnv && (
+                      <p className="mt-1 text-[11px] text-ink-muted">
+                        当前已保存环境变量：留空保存将保留原值，输入新内容将覆盖。
+                      </p>
+                    )}
+                  </div>
+                </>
+              )}
+
+              <div className="grid grid-cols-3 gap-3">
+                <div className="col-span-2">
+                  <label className="mb-1.5 block text-xs font-medium text-ink-secondary">说明（可选）</label>
+                  <Input
+                    value={mcpNotes}
+                    onChange={(e) => setMcpNotes(e.target.value)}
+                    placeholder="用途说明，将提供给智能体参考"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium text-ink-secondary">超时（秒）</label>
+                  <Input
+                    type="number"
+                    min={5}
+                    max={1800}
+                    value={mcpTimeout}
+                    onChange={(e) => setMcpTimeout(e.target.value)}
+                    placeholder="60"
+                    className="font-mono"
+                  />
+                </div>
+              </div>
+            </>
           )}
 
-          <div>
-            <label className="mb-1.5 block text-xs font-medium text-ink-secondary">说明（可选）</label>
-            <Input value={mcpNotes} onChange={(e) => setMcpNotes(e.target.value)} />
-          </div>
-
-          <div className="flex justify-end gap-2 pt-2">
-            <Button type="button" variant="secondary" onClick={() => setMcpOpen(false)}>
-              取消
+          <div className="flex items-center justify-between gap-2 border-t border-line pt-3">
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              loading={testingDraft}
+              onClick={() => void handleTestDraft()}
+            >
+              <Zap className="h-3.5 w-3.5" />
+              先试连
             </Button>
-            <Button type="submit" variant="primary" loading={savingMcp}>
-              保存连接
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button type="button" variant="secondary" onClick={() => setMcpOpen(false)}>
+                取消
+              </Button>
+              <Button type="submit" variant="primary" loading={savingMcp}>
+                保存连接
+              </Button>
+            </div>
           </div>
         </form>
       </Modal>

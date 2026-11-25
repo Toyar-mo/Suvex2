@@ -111,6 +111,8 @@ from app.kernel.schemas import (
     KernelUsageEntryOut,
     KernelWorkOrderOut,
     KernelWriteupOut,
+    McpMountCtf2In,
+    McpMountCtf2Out,
     McpServerOut,
     McpServersIn,
     McpServersOut,
@@ -705,6 +707,42 @@ async def test_mcp_server(
         db=db,
     )
     return McpServerTestOut(**result)
+
+
+@router.post(
+    "/mcp-servers/mount-ctf2",
+    response_model=McpMountCtf2Out,
+    summary="从已绑定 CTF2 账号一键挂载官方远程 HTTP MCP",
+)
+def mount_ctf2_mcp(
+    request: Request,
+    identity: AdminDep,
+    db: DbDep,
+    payload: McpMountCtf2In | None = None,
+) -> McpMountCtf2Out:
+    """用已绑定的 CTF2 账号凭据，在服务端直接挂载 `ctf2-suvex` 远程 HTTP MCP 并实测连通。
+
+    ★ 凭据全程不离服务端，不经过浏览器，不进入审计日志。
+    """
+    body = payload or McpMountCtf2In()
+    res = service.mount_ctf2_mcp_server(db, name=body.name, url=body.url)
+    audit.record(
+        db,
+        request=audit.from_http(request, identity),
+        action=AuditAction.KERNEL_MCP_SERVERS_UPDATE,
+        summary=f"一键挂载 CTF2 远程 HTTP MCP：{res['server']['name']}",
+        detail={
+            "name": res["server"]["name"],
+            "url": res["server"]["url"],
+            "ok": bool(res["test"].get("ok")),
+            "toolsCount": len(res["test"].get("tools") or []),
+        },
+    )
+    return McpMountCtf2Out(
+        server=McpServerOut(**res["server"]),
+        test=McpServerTestOut(**res["test"]),
+        message=res["message"],
+    )
 
 
 # ══════════════════════════════════════════════════════════

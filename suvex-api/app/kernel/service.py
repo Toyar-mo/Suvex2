@@ -365,17 +365,30 @@ def bind_account(db: Session, *, token: str, label: str = "") -> KernelAccount:
     if not cleaned:
         raise ApiError.validation("请填写 CTF2 的 PAT。", {"token": "必填"})
 
+    from app.kernel import mcp_sync
+    from app.kernel.mcp import McpError
+
+    mcp_agent_name: str | None = None
+
     async def _probe() -> None:
+        nonlocal mcp_agent_name
         async with KernelClient(token=cleaned) as client:
-            # `practice/` 是最轻的端点：它只列练习集，不涉及任何状态。
-            # 用它做探测而不是"随便调一个能 200 的端点"——
-            # 探测的用途是验证**凭据有效且这个 scope 有**。
-            await client.list_practice()
+            try:
+                # `practice/` 是最轻的端点：它只列练习集，不涉及任何状态。
+                await client.list_practice()
+            except KernelScopeMissing:
+                # 新版 CTF2 Agent Token 可能只开放官方 HTTP MCP 端点，不开放旧 REST。
+                whoami = await mcp_sync.probe_agent_via_mcp(cleaned)
+                agent_obj = whoami.get("agent") if isinstance(whoami, dict) else None
+                if isinstance(agent_obj, dict) and agent_obj.get("name"):
+                    mcp_agent_name = str(agent_obj["name"])
 
     try:
         _run(_probe())
     except KernelError as exc:
         raise _translate(exc) from exc
+    except McpError as exc:
+        raise ApiError(401, "CTF2_PAT_EXPIRED", f"CTF2 凭据校验失败（REST 与 MCP 均未通过）：{exc}") from exc
 
     account = get_account(db)
     if account is None:
@@ -383,6 +396,8 @@ def bind_account(db: Session, *, token: str, label: str = "") -> KernelAccount:
         db.add(account)
 
     account.label = (label or "").strip() or account.label or "CTF2 账号"
+    if mcp_agent_name and not account.remote_username:
+        account.remote_username = mcp_agent_name
     # 密文与掩码**必须一起更新**（读取路径靠掩码，不做解密）——
     # 与 provider 的同名两列是同一条规矩。
     account.token_encrypted = encrypt_secret(cleaned)
@@ -623,6 +638,9 @@ def _sync_locked(db: Session, *, competition_ids: list[str] | None = None) -> Sy
         混着做的话，我们要么在协程里开数据库会话（阻塞 event loop），
         要么把客户端对象传进同步函数（那会让 session 生命周期难以推理）。
         """
+        from app.kernel import mcp_sync
+        from app.kernel.mcp import McpError
+
         collected: dict[str, Any] = {
             "practice": [],
             "practice_details": [],
@@ -632,18 +650,33 @@ def _sync_locked(db: Session, *, competition_ids: list[str] | None = None) -> Sy
             "errors": [],
         }
         async with KernelClient(token=token) as client:
-            practices = await client.list_practice()
+            try:
+                practices = await client.list_practice()
+            except KernelScopeMissing:
+                practices = []
             collected["practice"] = practices
+            practice_remote_ids = {
+                str(_pick(item, "id", "practice_id"))
+                for item in practices
+                if _pick(item, "id", "practice_id") is not None
+            }
+
+            # 如果用户指定了某个练习场 ID（来自 MCP 远端选择器），直接走 MCP 精确同步
+            if competition_ids and any(str(cid) in practice_remote_ids for cid in competition_ids):
+                try:
+                    return await mcp_sync.sync_via_mcp(
+                        token,
+                        competition_ids=competition_ids,
+                        known_remote_ids=known_remote_ids,
+                    )
+                except McpError as exc:
+                    logger.warning("CTF2 MCP 指定题场同步失败，将尝试回退 REST：%s", exc)
+                    collected["errors"].append(f"MCP 同步：{exc}")
+
             for item in practices[:MAX_SYNC_COMPETITIONS]:
                 remote_id = _pick(item, "id", "practice_id")
                 if remote_id is None:
                     continue
-                # ⚠️ 平台**没有"列出练习集题目"的端点**（见 client 的说明），
-                #    所以"内嵌数组"这条在 CTF2 上**恒为空**。
-                #    保留它只是为了兼容"别的平台把题目塞进练习集对象"的形状
-                #    （这份代码的目标平台会换 —— 见模块 docstring）。
-                #
-                #    ★ 真正能从 CTF2 捞到题的是下面那段**解法侧门**。
                 challenges = item.get("challenges")
                 if not isinstance(challenges, list):
                     continue
@@ -661,30 +694,15 @@ def _sync_locked(db: Session, *, competition_ids: list[str] | None = None) -> Sy
                         }
                     )
 
-            # ── ★ 题目来源：解法侧门 ────────────────────────────
-            #
-            # 这是 CTF2 上**唯一**能批量拿到真实题目的路。
-            #
-            # 链条：`writeups`（公开解法，每条带 `challenge_id`）
-            #   → 逐个练习集试 `practice/{id}/challenges/{cid}/`
-            #   → 命中的那道就是可提交的练习题。
-            #
-            # 实测（2026-09-30）：98 个 id **98/98 全中**
-            # （BUUCTF 96、N1BOOK 1、BUUCTF-Real 1）。
-            #
-            # ⚠️ 试练习集的**顺序**决定请求量：按题目数降序能让绝大多数
-            #    id 一次命中（实测 98 次请求，而不是最坏 98×5=490 次）。
-            #    96/98 落在题目最多的那个练习集下面，这不是巧合 ——
-            #    镜像题、搬运题的解法自然集中在大库里。
-            #
-            # ⚠️ 逐 id 逐练习集容错：某道题不属于任何练习集是**正常**的
-            #    （daily 的 25 道就是 0 命中），不该中断整次同步。
             harvested = 0
+            writeups_forbidden = False
             try:
                 writeups = await client.list_writeups()
+            except KernelScopeMissing as exc:
+                writeups_forbidden = True
+                logger.info("CTF2 Agent Token 无 REST writeups 权限，将切换官方 HTTP MCP 同步：%s", exc)
+                writeups = []
             except KernelError as exc:
-                # 侧门拉不动不该毁掉整次同步 —— 练习集与赛事那两部分
-                # 已经拉好了，用户至少还能看到它们。
                 logger.warning("CTF2 解法列表拉取失败（不影响其余同步）：%s", exc)
                 writeups = []
 
@@ -699,11 +717,8 @@ def _sync_locked(db: Session, *, competition_ids: list[str] | None = None) -> Sy
                     for cid in dict.fromkeys(
                         w.get("challenge_id") for w in writeups if w.get("challenge_id")
                     )
-                    # ★ 已在库的**直接跳过** —— 这是把重复同步从 45 秒压到
-                    #   秒级的关键。理由与代价见 `known_remote_ids` 的说明。
                     if str(cid) not in already and str(cid) not in known_remote_ids
                 ][:MAX_SYNC_CHALLENGES]
-                # 题目多的练习集排前面 —— 命中率高，请求少。
                 ordered = sorted(
                     practices[:MAX_SYNC_COMPETITIONS],
                     key=lambda p: -int(p.get("challenge_count") or 0),
@@ -718,8 +733,6 @@ def _sync_locked(db: Session, *, competition_ids: list[str] | None = None) -> Sy
                                 str(practice_id), cid
                             )
                         except KernelError:
-                            # 不属于这个练习集是**正常**的（详情端点回 404），
-                            # 继续试下一个。
                             continue
                         if not detail:
                             continue
@@ -734,24 +747,52 @@ def _sync_locked(db: Session, *, competition_ids: list[str] | None = None) -> Sy
                     len(candidate_ids),
                     harvested,
                 )
+
+            comp_scope_forbidden = False
             for competition_id in (competition_ids or [])[:MAX_SYNC_COMPETITIONS]:
-                # ★ **逐场容错**：一场拉不动就记一笔、继续下一场。
-                #
-                # 这一条是被真实事故逼出来的：用户勾了一场自己**还没加入
-                # 战队**的赛事时，平台回 403 `TEAM_MEMBERSHIP_REQUIRED`，
-                # 而那个异常会让 `_fetch` 整体失败 —— 于是**连练习集**
-                # （前面已经拉好的那部分）也一起落不了库。
-                # 用户看到的是"整次同步失败"，而他其实只勾错了一场。
-                #
-                # 与模块 docstring 承诺的"一条失败不中断整次同步"是同一条规矩，
-                # 只是那句话说在题目层面，而这里要落到赛事层面。
                 try:
                     entry = await _fetch_competition(client, competition_id)
+                except KernelScopeMissing as exc:
+                    comp_scope_forbidden = True
+                    logger.info("CTF2 赛事 %s REST 权限受限，将改走官方 HTTP MCP：%s", competition_id, exc)
+                    continue
                 except KernelError as exc:
                     logger.warning("CTF2 赛事 %s 拉取失败：%s", competition_id, exc)
                     collected["errors"].append(f"赛事 {competition_id}：{exc}")
                     continue
                 collected["competitions"].append(entry)
+
+        # ★ Suvex 2.1：当旧版 REST 无法批量拉题（Agent Token 遭遇 agent_scope_forbidden，
+        #   或无公开解法且本次没捞到任何题）时，自动无缝切换 CTF2 官方远程 HTTP MCP！
+        need_mcp_fallback = (
+            writeups_forbidden
+            or comp_scope_forbidden
+            or (
+                not collected["practice_details"]
+                and not collected["competitions"]
+                and not collected.get("writeups_total")
+            )
+        )
+        if need_mcp_fallback:
+            try:
+                mcp_collected = await mcp_sync.sync_via_mcp(
+                    token,
+                    competition_ids=competition_ids,
+                    known_remote_ids=known_remote_ids,
+                )
+                if mcp_collected.get("practice"):
+                    collected["practice"] = mcp_collected["practice"]
+                if mcp_collected.get("practice_details"):
+                    collected["practice_details"] = mcp_collected["practice_details"]
+                if mcp_collected.get("competitions"):
+                    collected["competitions"] = mcp_collected["competitions"]
+                if mcp_collected.get("errors"):
+                    collected["errors"].extend(mcp_collected["errors"])
+                collected["mcp_synced"] = True
+                collected["mcp_total_listed"] = int(mcp_collected.get("mcp_total_listed") or 0)
+            except McpError as exc:
+                logger.warning("CTF2 官方 HTTP MCP 同步回退失败：%s", exc)
+                collected["errors"].append(f"CTF2 MCP 同步失败：{exc}")
         return collected
 
     try:
@@ -898,8 +939,18 @@ def _sync_locked(db: Session, *, competition_ids: list[str] | None = None) -> Sy
     # 根因是：`created/updated` 描述的是"**这次改了几行**"，而 note 要回答
     # 的是"**为什么没题**"。两者不是一回事 —— 得直接看侧门到底有没有货。
     if not competition_ids and result.challenges_created == 0:
+        mcp_synced = bool(collected.get("mcp_synced"))
+        mcp_listed = int(collected.get("mcp_total_listed") or 0)
         writeups_total = int(collected.get("writeups_total") or 0)
-        if writeups_total == 0:
+        if mcp_synced:
+            if result.challenges_updated > 0 or mcp_listed > 0:
+                total = db.execute(
+                    select(func.count()).select_from(KernelChallenge)
+                ).scalar_one()
+                result.note = f"。已通过 CTF2 官方远程 HTTP MCP 同步，本地共 {total} 道题"
+            else:
+                result.note = "。已连接 CTF2 官方远程 HTTP MCP，但当前账号下没有可见题目"
+        elif writeups_total == 0:
             # 侧门是空的：这是**唯一**真正需要解释的情况。
             result.note = (
                 "。练习集本身只提供元信息（平台没有「列出题目」的端点），"
@@ -907,12 +958,12 @@ def _sync_locked(db: Session, *, competition_ids: list[str] | None = None) -> Sy
                 "可以稍后重试；若持续为空，请确认这条 PAT 带有 writeup:read 权限"
             )
         elif result.challenges_updated == 0:
-            # 侧门有货、但一道新的都没有 —— 说明本地已经是最新。
-            # ★ 这不是失败，要把话说清楚，否则用户会反复点同步。
             total = db.execute(
                 select(func.count()).select_from(KernelChallenge)
             ).scalar_one()
             result.note = f"。本地已是最新（{total} 道题都在库里，本次无需更新）"
+    elif collected.get("mcp_synced"):
+        result.note = "（已通过 CTF2 官方远程 HTTP MCP 拉取）"
 
     logger.info("CTF2 同步完成：%s", result.message())
     return result
@@ -952,47 +1003,68 @@ async def _fetch_competition(client: KernelClient, competition_id: str) -> dict[
 
 
 def list_remote_competitions() -> list[dict[str, Any]]:
-    """**直接问平台**有哪些赛事（不落库）。
+    """**直接问平台**有哪些赛事与练习场（不落库）。"""
+    from app.kernel import mcp_sync
+    from app.kernel.mcp import McpError
 
-    ## 为什么需要它：先有鸡还是先有蛋
+    with session_scope() as db:
+        account = get_account(db)
+        if account is None:
+            raise ApiError(
+                409, "CTF2_NOT_BOUND", "尚未绑定 CTF2 账号。请先在「CTF2」页绑定一个 PAT。"
+            )
+        token = decrypt_account_token(account)
 
-    同步赛事题目要用户先选赛事，而"可选赛事"不能来自本地库 ——
-    本地库里的赛事正是**上一次同步的结果**，第一次用的时候它是空的。
-    所以这个函数绕过本地，直接问平台要列表。
-
-    ## 返回的形状是**精简后**的，不是平台原样
-
-    只留界面要用的几项（id / 名称 / 起止 / 状态原文）。理由与
-    `client` 的"不做 Pydantic 建模"相反：那一条说的是**别人家的契约**
-    不要建模；而这里是我们**自己**下发给前端的形状，它必须稳定 ——
-    前端拿它渲染列表并回传 id，多一个字段就多一处会漂移的东西。
-
-    ⚠️ 平台返回的字段名（`name` / `start_time` / `end_time` / `is_public` …）
-    是用真 PAT 实测出来的，见 `_pick` 的多候选键写法。
-    """
-    async def _fetch() -> list[dict[str, Any]]:
-        async with build_client_sync() as client:
-            return await client.list_competitions()
+    async def _fetch() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        rest_rows: list[dict[str, Any]] = []
+        scope_forbidden = False
+        async with KernelClient(token=token) as client:
+            try:
+                rest_rows = await client.list_competitions()
+            except KernelScopeMissing:
+                scope_forbidden = True
+        mcp_rows: list[dict[str, Any]] = []
+        if scope_forbidden or not rest_rows:
+            try:
+                mcp_rows = await mcp_sync.list_remote_sources_via_mcp(token)
+            except McpError as exc:
+                if scope_forbidden:
+                    raise KernelScopeMissing(
+                        f"旧版 REST 与官方 MCP 均无法获取赛事列表：{exc}",
+                    ) from exc
+                logger.debug("MCP 补充远端题场列表跳过：%s", exc)
+        return rest_rows, mcp_rows
 
     try:
-        rows = _run(_fetch())
+        rows, mcp_rows = _run(_fetch())
     except KernelError as exc:
         raise _translate(exc) from exc
 
     out: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for item in rows:
         remote_id = _pick(item, "id", "competition_id")
         if remote_id is None:
             continue
+        rid = str(remote_id)
+        seen.add(rid)
         out.append(
             {
-                "remoteId": str(remote_id),
-                "name": _pick(item, "name", "title") or f"#{remote_id}",
+                "remoteId": rid,
+                "name": _pick(item, "name", "title") or f"#{rid}",
                 "startAt": _pick(item, "start_time", "startAt", "start_at"),
                 "endAt": _pick(item, "end_time", "endAt", "end_at"),
                 "status": _pick(item, "status", "state") or "",
+                "kind": "competition",
+                "challengeCount": None,
             }
         )
+    for item in mcp_rows:
+        rid = str(item.get("remoteId") or "").strip()
+        if not rid or rid in seen:
+            continue
+        seen.add(rid)
+        out.append(item)
     return out
 
 
@@ -1100,7 +1172,24 @@ def pull_challenge(db: Session, *, raw_input: str) -> tuple[KernelChallenge, boo
             "本地还没有任何练习集，无法判断这道题属于哪个练习集。请先点一次「同步题目」。",
         )
 
+    from app.kernel import mcp_sync
+    from app.kernel.mcp import McpError
+
+    practice_by_remote = {p.remote_id: p for p in practices[:MAX_SYNC_COMPETITIONS]}
+
     async def _fetch() -> tuple[KernelCompetition | None, dict[str, Any] | None]:
+        # 优先尝试官方 HTTP MCP（一次拿齐完整题面 + 签名附件下载 URL）
+        try:
+            pid, mcp_detail = await mcp_sync.pull_challenge_via_mcp(
+                token,
+                practice_ids=list(practice_by_remote.keys()),
+                challenge_id=challenge_id,
+            )
+            if pid and mcp_detail and pid in practice_by_remote:
+                return practice_by_remote[pid], mcp_detail
+        except McpError as exc:
+            logger.debug("MCP 单题拉取失败，回退旧版 REST：%s", exc)
+
         async with KernelClient(token=token) as client:
             for practice in practices[:MAX_SYNC_COMPETITIONS]:
                 try:
@@ -1108,8 +1197,6 @@ def pull_challenge(db: Session, *, raw_input: str) -> tuple[KernelChallenge, boo
                         practice.remote_id, challenge_id
                     )
                 except KernelError as exc:
-                    # ★ 逐集容错：某个练习集下没有这道题是**正常**的
-                    #   （那就是"不属于它"），不该中断整次查找。
                     logger.debug(
                         "练习集 %s 下没有题目 %s：%s", practice.remote_id, challenge_id, exc
                     )
@@ -4433,9 +4520,103 @@ def save_mcp_servers(db: Session, servers: list[dict]) -> list[dict]:
     db.refresh(row)
     logger.info(
         "MCP 连接已更新：%s",
-        "、".join(f"{s['name']}({s['command']})" for s in (row.mcp_servers or [])) or "（清空）",
+        "、".join(
+            f"{s['name']}({s['url'] if s.get('type') == 'http' else s['command']})"
+            for s in (row.mcp_servers or [])
+        )
+        or "（清空）",
     )
     return public_mcp_servers(db)
+
+
+def mount_ctf2_mcp_server(
+    db: Session,
+    *,
+    name: str = "ctf2-suvex",
+    url: str = "https://ctf2.dasctf.com/api/ai/v1/mcp",
+) -> dict[str, Any]:
+    """用已绑定的 CTF2 账号凭据，在服务端直接挂载并试连官方远程 HTTP MCP。
+
+    ★ 凭据全程不离服务端：前端无需也拿不到明文 `CTF2_AGENT_TOKEN`，
+      其它已保存的 MCP 连接的 `env` / `headers` 会通过 `preserve_*` 原样保留。
+    """
+    from app.kernel import mcp_sync
+
+    account = get_account(db)
+    if account is None:
+        raise ApiError(409, "CTF2_NOT_BOUND", "尚未绑定 CTF2 账号，请先在 CTF 夺旗页绑定凭据。")
+    token = decrypt_account_token(account)
+
+    clean_name = (name or mcp_sync.CTF2_DEFAULT_MCP_NAME).strip() or mcp_sync.CTF2_DEFAULT_MCP_NAME
+    clean_url = (url or mcp_sync.CTF2_DEFAULT_MCP_URL).strip() or mcp_sync.CTF2_DEFAULT_MCP_URL
+
+    existing = get_mcp_servers(db)
+    next_servers: list[dict[str, Any]] = []
+    for item in existing:
+        if str(item.get("name") or "").strip() == clean_name:
+            continue
+        next_servers.append(
+            {
+                "name": str(item.get("name") or "").strip(),
+                "type": str(item.get("type") or "stdio"),
+                "command": str(item.get("command") or ""),
+                "args": list(item.get("args") or []),
+                "env": {},
+                "preserve_env": True,
+                "url": str(item.get("url") or ""),
+                "headers": {},
+                "preserve_headers": True,
+                "notes": str(item.get("notes") or ""),
+                "allowed_tools": item.get("allowed_tools"),
+                "call_timeout": item.get("call_timeout"),
+            }
+        )
+
+    entry: dict[str, Any] = {
+        "name": clean_name,
+        "type": "http",
+        "command": "",
+        "args": [],
+        "env": {},
+        "preserve_env": False,
+        "url": clean_url,
+        "headers": {"Authorization": f"Bearer {token}"},
+        "preserve_headers": False,
+        "notes": mcp_sync.CTF2_DEFAULT_MCP_NOTES,
+        "allowed_tools": None,
+        "call_timeout": 60.0,
+    }
+    next_servers.append(entry)
+
+    saved_public = save_mcp_servers(db, next_servers)
+    public_item = next(
+        (s for s in saved_public if s.get("name") == clean_name),
+        saved_public[-1],
+    )
+    test_res = _run(
+        test_mcp_server(
+            {
+                "name": clean_name,
+                "type": "http",
+                "url": clean_url,
+                "headers": {},
+                "preserve_headers": True,
+                "preserve_env": False,
+                "call_timeout": 30.0,
+            },
+            db=db,
+        )
+    )
+    return {
+        "server": public_item,
+        "test": test_res,
+        "message": (
+            f"已挂载 `{clean_name}` 并通过连通测试（发现 {len(test_res.get('tools') or [])} 个 CTF2 工具，"
+            f"{test_res.get('elapsed_ms', 0)}ms）"
+            if test_res.get("ok")
+            else f"已保存 `{clean_name}`，但试连未通过：{test_res.get('reason') or '未知原因'}"
+        ),
+    }
 
 
 def _with_preserved_secrets(item: dict, db: Session | None) -> dict:
@@ -4837,6 +5018,7 @@ __all__ = [
     "list_challenges",
     "list_competitions",
     "list_environments",
+    "mount_ctf2_mcp_server",
     "public_mcp_servers",
     "release_environment",
     "release_environment_sync",

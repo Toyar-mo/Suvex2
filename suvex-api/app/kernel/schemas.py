@@ -526,6 +526,25 @@ class McpServerTestOut(CamelModel):
     elapsedMs: int = 0
 
 
+class McpMountCtf2In(StrictModel):
+    """`POST /kernel/mcp-servers/mount-ctf2` —— 一键把已绑定 CTF2 账号挂载为远程 HTTP MCP。"""
+
+    name: str = Field(default="ctf2-suvex", min_length=1, max_length=64)
+    url: str = Field(
+        default="https://ctf2.dasctf.com/api/ai/v1/mcp",
+        min_length=8,
+        max_length=512,
+    )
+
+
+class McpMountCtf2Out(CamelModel):
+    """一键挂载 CTF2 远程 HTTP MCP 的结果。"""
+
+    server: McpServerOut
+    test: McpServerTestOut
+    message: str
+
+
 # ══════════════════════════════════════════════════════════
 # 内置工具清单与开关（v0.82）
 # ══════════════════════════════════════════════════════════
@@ -1120,28 +1139,15 @@ class KernelChallengeOut(CamelModel):
 
 
 class KernelRemoteCompetitionOut(CamelModel):
-    """`GET /ctf2/competitions/remote` —— **平台侧**的赛事列表（不落库）。
-
-    ## 为什么它不是 `KernelCompetitionOut`
-
-    那个是**本地**行（有 id、kind、challenge_count、同步时间…），
-    而这个是"平台说它有哪些赛事"的即时快照 —— 它可能包含我们
-    还没同步过的赛事。两者的字段集合本来就不一样，硬合成一个会让
-    前端在两种语义之间猜（`id` 到底是本地 id 还是平台 id？）。
-
-    这里的 `remoteId` 是**平台 id**，前端把它原样回传给
-    `POST /ctf2/sync` 的 `competitionIds`。
-    """
-
     remoteId: str
     name: str
-    # 起止时间原样下发（平台给的是字符串）。**不解析成时间戳**：
-    # 解析失败的后果是"这场赛事的时间显示成空白"，而空白不会告诉用户
-    # "我们没读懂它的格式"—— 原样传至少前端还能显示点什么。
-    startAt: str | None
-    endAt: str | None
-    # 平台侧的状态原文（不枚举：那是别人家的取值空间）。
-    status: str
+    startAt: str | None = None
+    endAt: str | None = None
+    status: str = ""
+    #: 区分赛事 (`competition`) 与练习场 (`practice`)
+    kind: str = "competition"
+    #: 平台声明的题目总数（练习场有精确值，赛事可为空）
+    challengeCount: int | None = None
 
 
 class KernelPullIn(StrictModel):

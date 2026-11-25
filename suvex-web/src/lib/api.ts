@@ -41,12 +41,14 @@ import type {
   KernelCompetitionOut,
   KernelQueueOut,
   KernelRecipesOut,
+  KernelRemoteCompetitionOut,
   KernelSkillsOut,
   KernelToolProbeOut,
   KernelToolsOut,
   KernelUsageSummary,
   KernelWorkOrderOut,
   KernelWriteupOut,
+  McpMountCtf2Out,
   McpServerIn,
   McpServerOut,
   McpServerTestOut,
@@ -492,17 +494,29 @@ export const api = {
   deleteKernelAccount: (accountId: string) =>
     request<void>(`/kernel/accounts/${encodeURIComponent(accountId)}`, { method: 'DELETE' }),
   getKernelCompetitions: () => request<KernelCompetitionOut[]>('/kernel/competitions'),
+  getRemoteCompetitions: () => request<KernelRemoteCompetitionOut[]>('/kernel/competitions/remote'),
   getKernelChallenges: (params?: { competitionId?: string; status?: string }) =>
     request<KernelChallengeOut[]>(`/kernel/challenges${qs(params || {})}`),
   getKernelQueue: () => request<KernelQueueOut>('/kernel/queue'),
   syncKernel: (competitionIds: string[] = []) =>
-    request<{ competitions: number; challengesCreated: number; challengesUpdated: number; message: string }>(
+    request<{
+      competitions: number
+      challengesCreated: number
+      challengesUpdated: number
+      errors?: string[]
+      message: string
+    }>(
       '/kernel/sync',
       {
         method: 'POST',
         body: JSON.stringify({ competitionIds }),
       },
     ),
+  mountCtf2Mcp: (payload?: { name?: string; url?: string }) =>
+    request<McpMountCtf2Out>('/kernel/mcp-servers/mount-ctf2', {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    }),
   pullChallenge: (input: string) =>
     request<{ challenge: KernelChallengeOut; created: boolean; competitionName: string }>(
       '/kernel/challenges/pull',

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
+  AlertTriangle,
   ArrowDownWideNarrow,
   CheckCircle2,
   DownloadCloud,
@@ -8,9 +9,12 @@ import {
   Flag,
   Flame,
   KeyRound,
+  ListFilter,
   MessagesSquare,
   Play,
+  Plug,
   RefreshCw,
+  Sparkles,
   Square,
   Trash2,
   Trophy,
@@ -23,8 +27,10 @@ import type {
   KernelChallengeOut,
   KernelCompetitionOut,
   KernelQueueOut,
+  KernelRemoteCompetitionOut,
   KernelUsageSummary,
   KernelWriteupOut,
+  McpServerOut,
   RaceStatusOut,
 } from '@/types/api'
 import {
@@ -51,11 +57,20 @@ export function CtfPage() {
   const [queue, setQueue] = useState<KernelQueueOut | null>(null)
   const [usage, setUsage] = useState<KernelUsageSummary | null>(null)
   const [raceStatus, setRaceStatus] = useState<RaceStatusOut | null>(null)
+  const [mcpServers, setMcpServers] = useState<McpServerOut[]>([])
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
+  const [mountingMcp, setMountingMcp] = useState(false)
+  const [syncWarnings, setSyncWarnings] = useState<string[]>([])
   const [categoryFilter, setCategoryFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [selectedIds, setSelectedIds] = useState<string[]>([])
+
+  // Remote Source Picker Modal
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [remoteSources, setRemoteSources] = useState<KernelRemoteCompetitionOut[]>([])
+  const [loadingRemote, setLoadingRemote] = useState(false)
+  const [pickedRemoteIds, setPickedRemoteIds] = useState<string[]>([])
 
   // Race Modal
   const [raceOpen, setRaceOpen] = useState(false)
@@ -81,24 +96,24 @@ export function CtfPage() {
 
   const loadAll = useCallback(async () => {
     try {
-      const [accs, comps, q, usg, race] = await Promise.all([
+      const [accs, comps, q, usg, race, mcp] = await Promise.all([
         api.getKernelAccounts().catch(() => []),
         api.getKernelCompetitions().catch(() => []),
         api.getKernelQueue().catch(() => null),
         api.getKernelUsage(selectedCompId || undefined).catch(() => null),
         api.getRaceStatus().catch(() => null),
+        api.getMcpServers().catch(() => ({ servers: [] })),
       ])
+      const sortedComps = [...comps].sort((a, b) => b.challengeCount - a.challengeCount)
       setAccounts(accs)
-      setCompetitions(comps)
+      setCompetitions(sortedComps)
       setQueue(q)
       setUsage(usg)
       setRaceStatus(race)
-
-      const compId = selectedCompId || comps[0]?.id || ''
-      if (!selectedCompId && compId) setSelectedCompId(compId)
+      setMcpServers(mcp.servers)
 
       const chals = await api.getKernelChallenges({
-        competitionId: compId || undefined,
+        competitionId: selectedCompId || undefined,
       })
       setChallenges(chals)
     } catch (err) {
@@ -113,6 +128,19 @@ export function CtfPage() {
     const timer = window.setInterval(() => void loadAll(), 15000)
     return () => window.clearInterval(timer)
   }, [loadAll])
+
+  const hasBoundAccount = useMemo(
+    () => accounts.some((a) => a.status === 'active' && a.hasToken),
+    [accounts],
+  )
+
+  const ctf2McpMounted = useMemo(
+    () =>
+      mcpServers.find(
+        (s) => s.name === 'ctf2-suvex' || s.url.includes('ctf2.dasctf.com/api/ai/v1/mcp'),
+      ) || null,
+    [mcpServers],
+  )
 
   const categories = useMemo(() => {
     return Array.from(new Set(challenges.map((c) => c.category).filter(Boolean))).sort()
@@ -192,7 +220,7 @@ export function CtfPage() {
     setBinding(true)
     try {
       await api.bindKernelAccount(bindToken.trim(), bindLabel.trim() || 'CTF 账号')
-      push('赛题平台账号已绑定', 'success')
+      push('赛题平台账号已绑定，可点击「同步题板」或「挂载 CTF2 MCP」', 'success')
       setBindOpen(false)
       setBindToken('')
       await loadAll()
@@ -213,17 +241,55 @@ export function CtfPage() {
     }
   }
 
-  const handleSync = async () => {
-    setSyncing(true)
+  const handleMountCtf2Mcp = async () => {
+    setMountingMcp(true)
     try {
-      const res = await api.syncKernel()
+      const res = await api.mountCtf2Mcp()
+      push(res.message, res.test.ok ? 'success' : 'error')
+      await loadAll()
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '挂载 ctf2-suvex MCP 失败', 'error')
+    } finally {
+      setMountingMcp(false)
+    }
+  }
+
+  const handleSync = async (competitionIds: string[] = []) => {
+    setSyncing(true)
+    setSyncWarnings([])
+    try {
+      const res = await api.syncKernel(competitionIds)
+      if (res.errors && res.errors.length > 0) {
+        setSyncWarnings(res.errors)
+      }
       push(res.message || `同步完成：新增 ${res.challengesCreated} 题`, 'success')
+      setPickerOpen(false)
       await loadAll()
     } catch (err) {
       push(err instanceof ApiClientError ? err.message : '同步赛事失败', 'error')
     } finally {
       setSyncing(false)
     }
+  }
+
+  const handleOpenSourcePicker = async () => {
+    setPickerOpen(true)
+    setLoadingRemote(true)
+    try {
+      const list = await api.getRemoteCompetitions()
+      setRemoteSources(list)
+      setPickedRemoteIds([])
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '拉取远端题库列表失败', 'error')
+    } finally {
+      setLoadingRemote(false)
+    }
+  }
+
+  const togglePickedRemote = (rid: string) => {
+    setPickedRemoteIds((prev) =>
+      prev.includes(rid) ? prev.filter((x) => x !== rid) : [...prev, rid],
+    )
   }
 
   const handlePullSingle = async (e: FormEvent) => {
@@ -302,7 +368,7 @@ export function CtfPage() {
       <PageHeader
         eyebrow="Autonomous CTF Kernel & Model Race"
         title="CTF 夺旗工作台"
-        description="支持多模型赛跑自动托管、按分值优先级排队、批量开解控制、沙箱自动解题与 Writeup 交付。"
+        description="原生支持 CTF2 远程 HTTP MCP 拉题与靶机调度、多模型赛跑自动托管、按分值排队与 Writeup 交付。"
         actions={
           <>
             <Button variant="secondary" size="sm" onClick={() => void handlePrioritizeByScore()}>
@@ -324,6 +390,12 @@ export function CtfPage() {
               <KeyRound className="h-3.5 w-3.5" />
               绑定账号
             </Button>
+            {hasBoundAccount && (
+              <Button variant="secondary" size="sm" onClick={() => void handleOpenSourcePicker()}>
+                <ListFilter className="h-3.5 w-3.5" />
+                选择题库
+              </Button>
+            )}
             <Button variant="primary" size="sm" loading={syncing} onClick={() => void handleSync()}>
               <RefreshCw className="h-3.5 w-3.5" />
               同步题板
@@ -331,6 +403,26 @@ export function CtfPage() {
           </>
         }
       />
+
+      {/* Sync Warnings */}
+      {syncWarnings.length > 0 && (
+        <div className="mb-5 flex items-start justify-between gap-3 rounded-editorial border border-amber-200 bg-amber-50/70 px-4 py-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              <p className="font-medium">本次同步有部分提示：</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                {syncWarnings.slice(0, 5).map((w, i) => (
+                  <li key={i}>{w}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+          <Button size="sm" variant="ghost" onClick={() => setSyncWarnings([])}>
+            关闭
+          </Button>
+        </div>
+      )}
 
       {/* Active Race Banner */}
       {raceStatus?.running && (
@@ -374,13 +466,13 @@ export function CtfPage() {
       <div className="mb-6 grid gap-4 md:grid-cols-3">
         <Card className="p-4">
           <div className="flex items-center justify-between text-xs text-ink-secondary">
-            <span>已绑定赛题平台</span>
+            <span>已绑定赛题平台 & MCP</span>
             <KeyRound className="h-3.5 w-3.5 text-ink-muted" />
           </div>
           {accounts.length === 0 ? (
-            <p className="mt-2 text-xs text-ink-muted">尚未绑定平台 Access Key</p>
+            <p className="mt-2 text-xs text-ink-muted">尚未绑定平台 Agent Token / Access Key</p>
           ) : (
-            <div className="mt-2 space-y-1.5">
+            <div className="mt-2 space-y-2">
               {accounts.map((acc) => (
                 <div key={acc.id} className="flex items-center justify-between text-xs">
                   <div className="min-w-0">
@@ -399,6 +491,27 @@ export function CtfPage() {
                   </button>
                 </div>
               ))}
+              {hasBoundAccount && (
+                <div className="flex items-center justify-between gap-2 border-t border-line pt-2">
+                  {ctf2McpMounted ? (
+                    <span className="inline-flex items-center gap-1 text-[11px] text-emerald-700 dark:text-emerald-400">
+                      <Plug className="h-3 w-3" />
+                      {ctf2McpMounted.name} MCP 已挂载
+                    </span>
+                  ) : (
+                    <span className="text-[11px] text-ink-muted">远程 HTTP MCP 未挂载</span>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    loading={mountingMcp}
+                    onClick={() => void handleMountCtf2Mcp()}
+                  >
+                    <Sparkles className="h-3 w-3" />
+                    {ctf2McpMounted ? '重连校验' : '一键挂载 MCP'}
+                  </Button>
+                </div>
+              )}
             </div>
           )}
         </Card>
@@ -440,7 +553,9 @@ export function CtfPage() {
               onChange={(e) => setSelectedCompId(e.target.value)}
               className="h-9 rounded-lg border border-line bg-surface px-3 text-xs font-medium text-ink focus:border-accent focus:outline-none"
             >
-              <option value="">全部赛事 ({challenges.length})</option>
+              <option value="">
+                全部题场/赛事 ({competitions.reduce((acc, c) => acc + c.challengeCount, 0)} 题)
+              </option>
               {competitions.map((comp) => (
                 <option key={comp.id} value={comp.id}>
                   {comp.name} ({comp.challengeCount} 题)
@@ -487,7 +602,7 @@ export function CtfPage() {
             <option value="">全部状态</option>
             <option value="unsolved">未解出</option>
             <option value="solving">解题中</option>
-            <option value="candidate">待交 Flag</option>
+            <option value="candidate_ready">待交 Flag</option>
             <option value="solved">已解出</option>
           </select>
         </div>
@@ -517,11 +632,28 @@ export function CtfPage() {
         <EmptyState
           icon={<Flag className="h-5 w-5" />}
           title="题板为空"
-          description="请先绑定 CTF 竞赛平台账号并点击「同步题板」，或直接通过题目链接拉取单题。"
+          description={
+            hasBoundAccount
+              ? '已绑定账号。请点击「同步题板」通过 CTF2 官方远程 HTTP MCP 批量拉取练习场/赛事题目，或点击「选择题库」精确同步指定题场。'
+              : '请先绑定 CTF 竞赛平台账号并点击「同步题板」，或直接通过题目链接拉取单题。'
+          }
           action={
-            <Button variant="primary" size="sm" onClick={() => setBindOpen(true)}>
-              绑定平台账号
-            </Button>
+            hasBoundAccount ? (
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <Button variant="primary" size="sm" loading={syncing} onClick={() => void handleSync()}>
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  立即通过 MCP 同步题板
+                </Button>
+                <Button variant="secondary" size="sm" onClick={() => void handleOpenSourcePicker()}>
+                  <ListFilter className="h-3.5 w-3.5" />
+                  选择指定题库
+                </Button>
+              </div>
+            ) : (
+              <Button variant="primary" size="sm" onClick={() => setBindOpen(true)}>
+                绑定平台账号
+              </Button>
+            )
           }
         />
       ) : (
@@ -617,6 +749,89 @@ export function CtfPage() {
         </div>
       )}
 
+      {/* Remote Source Picker Modal */}
+      <Modal
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        title="选择远端题库 / 赛事同步"
+        subtitle="实时通过 CTF2 官方远程 HTTP MCP 查询当前账号可见的练习场与赛事"
+        maxWidth="max-w-xl"
+      >
+        {loadingRemote ? (
+          <div className="space-y-2.5 py-4">
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+          </div>
+        ) : remoteSources.length === 0 ? (
+          <p className="py-6 text-center text-xs text-ink-muted">未查询到可用的远端练习场或赛事。</p>
+        ) : (
+          <div className="space-y-2">
+            <div className="max-h-80 space-y-1.5 overflow-y-auto pr-1">
+              {remoteSources.map((src) => {
+                const selected = pickedRemoteIds.includes(src.remoteId)
+                return (
+                  <label
+                    key={src.remoteId}
+                    className={cn(
+                      'flex cursor-pointer items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-xs transition-colors',
+                      selected
+                        ? 'border-accent bg-accent-soft/40'
+                        : 'border-line bg-surface hover:bg-subtle',
+                    )}
+                  >
+                    <div className="flex min-w-0 items-center gap-2.5">
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        onChange={() => togglePickedRemote(src.remoteId)}
+                      />
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="truncate font-medium text-ink">{src.name}</span>
+                          <Badge className="text-[10px]">
+                            {src.kind === 'practice' ? '练习场' : '赛事'}
+                          </Badge>
+                        </div>
+                        <p className="mt-0.5 truncate font-mono text-[10px] text-ink-muted">
+                          {src.remoteId}
+                        </p>
+                      </div>
+                    </div>
+                    {src.challengeCount != null && (
+                      <span className="shrink-0 font-mono text-xs font-medium tabular-nums text-ink-secondary">
+                        {src.challengeCount} 题
+                      </span>
+                    )}
+                  </label>
+                )
+              })}
+            </div>
+            <div className="flex items-center justify-between border-t border-line pt-3">
+              <span className="text-[11px] text-ink-muted">
+                {pickedRemoteIds.length > 0
+                  ? `已勾选 ${pickedRemoteIds.length} 项（单场最多同步 150 题）`
+                  : '不勾选直接点同步 = 全量快扫全部练习场'}
+              </span>
+              <div className="flex items-center gap-2">
+                <Button type="button" variant="secondary" onClick={() => setPickerOpen(false)}>
+                  取消
+                </Button>
+                <Button
+                  type="button"
+                  variant="primary"
+                  loading={syncing}
+                  onClick={() => void handleSync(pickedRemoteIds)}
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  开始同步
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+      </Modal>
+
       {/* Multi-Model Race Modal */}
       <Modal
         open={raceOpen}
@@ -679,7 +894,7 @@ export function CtfPage() {
         open={bindOpen}
         onClose={() => setBindOpen(false)}
         title="绑定 CTF 平台账号"
-        subtitle="Access Key 经服务端加密存储，仅用于同步赛事题板与提交 Flag。"
+        subtitle="支持 CTF2 Agent Token（$CTF2_AGENT_TOKEN）与传统 PAT，经服务端加密存储。"
       >
         <form onSubmit={handleBindAccount} className="space-y-4">
           <div>
@@ -693,13 +908,13 @@ export function CtfPage() {
           </div>
           <div>
             <label className="mb-1.5 block text-xs font-medium text-ink-secondary">
-              平台 Access Key / Token
+              平台 Agent Token / Access Key
             </label>
             <Input
               type="password"
               value={bindToken}
               onChange={(e) => setBindToken(e.target.value)}
-              placeholder="粘贴竞赛平台 Token"
+              placeholder="粘贴 CTF2_AGENT_TOKEN 或平台 PAT"
               required
             />
           </div>

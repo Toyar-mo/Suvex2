@@ -55,3 +55,71 @@ def test_agent_profile_tool_allowlist_and_prompt():
     assert "run_shell, browser, read_file" in prompt
     assert "api-auth" in prompt
     assert "threat-intel" in prompt
+
+
+def test_ctf2_mcp_challenge_and_attachment_normalization():
+    import pytest
+
+    from app.kernel.mcp import McpError
+    from app.kernel.mcp_sync import (
+        extract_mcp_json,
+        normalize_mcp_attachments,
+        normalize_mcp_challenge,
+    )
+
+    raw_ok = {
+        "content": [{"type": "text", "text": '{"items": [{"id": "c1", "name": "unipickle"}]}'}],
+        "isError": False,
+    }
+    assert extract_mcp_json(raw_ok) == {"items": [{"id": "c1", "name": "unipickle"}]}
+
+    with pytest.raises(McpError):
+        extract_mcp_json({"content": [{"type": "text", "text": "unauthorized"}], "isError": True})
+
+    files = [
+        {
+            "id": "f-1",
+            "is_visible": True,
+            "file": {"original_name": "unipickle.py", "size": 90},
+        },
+        {
+            "id": "f-hidden",
+            "is_visible": False,
+            "file": {"original_name": "secret.txt", "size": 10},
+        },
+    ]
+    resolved = {
+        "f-1": {
+            "url": "https://ctf2.dasctf.com/api/ai/v1/files/download/?token=abc",
+            "file_name": "unipickle.py",
+            "size": 90,
+        }
+    }
+    atts = normalize_mcp_attachments(files, resolved)
+    assert len(atts) == 1
+    assert atts[0]["name"] == "unipickle.py"
+    assert atts[0]["url"].startswith("https://ctf2.dasctf.com/api/ai/v1/files/download/")
+
+    summary = {
+        "id": "d78048b5-eaa3-4a06-8b1e-790d85930f6f",
+        "name": "unipickle",
+        "category": "PWN",
+        "difficulty": "Easy",
+        "points": 100,
+        "solve_count": 53,
+        "friendly_id": "PCHAL-2026-914282",
+    }
+    list_only = normalize_mcp_challenge(summary)
+    assert list_only["id"] == summary["id"]
+    assert list_only["title"] == "unipickle"
+    assert list_only["score"] == 100
+    assert "Easy" in list_only["description"]
+
+    with_detail = normalize_mcp_challenge(
+        summary,
+        detail={"challenge": {**summary, "description": "Real prompt body", "files": files}},
+        resolved_urls=resolved,
+    )
+    assert with_detail["description"] == "Real prompt body"
+    assert len(with_detail["attachments"]) == 1
+    assert with_detail["attachments"][0]["url"].startswith("https://ctf2.dasctf.com/")

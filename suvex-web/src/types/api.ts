@@ -806,6 +806,22 @@ export interface McpServerTestOut {
   elapsedMs: number
 }
 
+export interface McpMountCtf2Out {
+  server: McpServerOut
+  test: McpServerTestOut
+  message: string
+}
+
+export interface KernelRemoteCompetitionOut {
+  remoteId: string
+  name: string
+  startAt: string | null
+  endAt: string | null
+  status: string
+  kind?: 'competition' | 'practice' | string
+  challengeCount?: number | null
+}
+
 export interface KernelToolProbeOut {
   name: string
   found: boolean

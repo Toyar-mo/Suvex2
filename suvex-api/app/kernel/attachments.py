@@ -432,7 +432,7 @@ async def download_all(
     #   `Authorization: <token>`：`trust_env` 默认 `True` 会让下载走
     #   环境变量里的 `HTTP_PROXY`，那等于**把这个 token 交给那个代理**。
     http = client or httpx.AsyncClient(
-        timeout=httpx.Timeout(DOWNLOAD_TIMEOUT), trust_env=False
+        timeout=httpx.Timeout(DOWNLOAD_TIMEOUT), trust_env=False, follow_redirects=True
     )
     try:
         for item in pending:
@@ -486,6 +486,13 @@ async def _download_one(
     if target.resolve().parent != target_dir.resolve():
         raise KernelError(f"附件名净化后仍然跳出了目录：{item.name!r}")
 
+    # ★ Suvex 2.1：先查本地是否已完整落盘再发网络请求。
+    #   CTF2 MCP 返回的是短期签名 URL（5 分钟过期），若先请求再判重，
+    #   已下载完成的附件在下次同步时会误报 403。
+    if _already_there(target, expected_size=item.size):
+        result.skipped += 1
+        return
+
     # 平台/CDN 会按 UA / Referer 做基础 bot 过滤。python-httpx 的默认 UA
     # 在部分网关上是直接 403 的；这里用浏览器形状，仍然只请求已校验的官方域名。
     origin = urlsplit(item.url)
@@ -500,7 +507,7 @@ async def _download_one(
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         **({"Referer": referer} if referer else {}),
     }
-    if token:
+    if token and "token=" not in (origin.query or ""):
         headers["Authorization"] = f"Bearer {token}"
     async with http.stream("GET", item.url, headers=headers) as response:
         if response.status_code >= 400:
