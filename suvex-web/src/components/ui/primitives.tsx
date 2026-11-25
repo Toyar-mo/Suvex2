@@ -499,8 +499,8 @@ export function Drawer({
   }, [open, onClose])
 
   if (!open) return null
-  return (
-    <div className="fixed inset-0 z-50 flex justify-end">
+  return createPortal(
+    <div className="fixed inset-0 z-[70] flex justify-end">
       <div
         className="suvex-backdrop-in fixed inset-0 bg-black/35 backdrop-blur-[3px]"
         onClick={onClose}
@@ -531,7 +531,8 @@ export function Drawer({
         </div>
         <div className="flex-1 overflow-y-auto px-6 py-5">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -560,8 +561,8 @@ export function Modal({
   }, [open, onClose])
 
   if (!open) return null
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+  return createPortal(
+    <div className="fixed inset-0 z-[75] flex items-center justify-center p-4">
       <div
         className="suvex-backdrop-in fixed inset-0 bg-black/38 backdrop-blur-[3px]"
         onClick={onClose}
@@ -590,7 +591,8 @@ export function Modal({
         </div>
         <div className="max-h-[80vh] overflow-y-auto p-5">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 

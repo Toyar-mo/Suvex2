@@ -377,32 +377,34 @@
   }
 }
 
+/* Use `backwards` (NOT `both`/`forwards`) on enter transforms so once animation ends,
+   `transform` returns to `none` and never traps any `position: fixed` descendants. */
 .page-enter {
-  animation: suvex-page-enter 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: suvex-page-enter 220ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 .page-fade {
-  animation: suvex-fade-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: suvex-fade-in 180ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 .suvex-backdrop-in {
-  animation: suvex-fade-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: suvex-fade-in 180ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 .suvex-modal-in {
-  animation: suvex-modal-in 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: suvex-modal-in 220ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 .suvex-drawer-in {
-  animation: suvex-drawer-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: suvex-drawer-in 240ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 .suvex-drawer-left-in {
-  animation: suvex-drawer-left-in 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: suvex-drawer-left-in 220ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 .suvex-popover-in {
-  animation: suvex-popover-in 170ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: suvex-popover-in 160ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 .suvex-toast-in {
-  animation: suvex-toast-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: suvex-toast-in 240ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 .suvex-toast-out {
-  animation: suvex-toast-out 200ms cubic-bezier(0.4, 0, 1, 1) both;
+  animation: suvex-toast-out 200ms cubic-bezier(0.4, 0, 1, 1) forwards;
 }
 .suvex-toast-bar {
   transform-origin: left;

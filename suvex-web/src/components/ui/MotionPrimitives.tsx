@@ -93,8 +93,8 @@ export function ScrollReveal({
         transitionDelay: visible && delayMs ? `${delayMs}ms` : '0ms',
       }}
       className={cn(
-        'transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-transform',
-        visible ? 'translate-y-0 opacity-100 blur-0' : 'translate-y-3 opacity-0 blur-[2px]',
+        'transition-[opacity,transform] duration-400 ease-[cubic-bezier(0.22,1,0.36,1)]',
+        visible ? 'opacity-100' : 'translate-y-2.5 opacity-0',
         className,
       )}
     >

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { ArrowRight, Moon, Plus, Search, Sun } from 'lucide-react'
 import { NAV_ITEMS } from '@/navigation'
@@ -109,8 +110,8 @@ export function CommandPalette({
 
   if (!open) return null
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center px-4 pt-[14vh]">
+  return createPortal(
+    <div className="fixed inset-0 z-[80] flex items-start justify-center px-4 pt-[14vh]">
       <div
         className="suvex-backdrop-in fixed inset-0 bg-black/35 backdrop-blur-[3px]"
         onClick={onClose}
@@ -194,6 +195,7 @@ export function CommandPalette({
           <span>⌘K 快速唤起</span>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

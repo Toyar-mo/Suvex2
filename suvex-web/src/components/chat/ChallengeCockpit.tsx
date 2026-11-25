@@ -185,19 +185,32 @@ export function ChallengeCockpit({
   const [events, setEvents] = useState<ActivityEventOut[]>([])
   const [loadingEvents, setLoadingEvents] = useState(false)
   const [streamConnected, setStreamConnected] = useState(false)
-  const [panelOpen, setPanelOpen] = useState(!hasChatMessages)
+  const initialStatus = challengeRef.status
+  const initialSolving =
+    initialStatus === 'solving' ||
+    initialStatus === 'environment_ready' ||
+    initialStatus === 'submitting'
+  const [panelOpen, setPanelOpen] = useState(!hasChatMessages || initialSolving)
   const [activeTab, setActiveTab] = useState<'trace' | 'brief'>('trace')
   const [busyAction, setBusyAction] = useState(false)
   const [flagDraft, setFlagDraft] = useState(challengeRef.candidateFlag || '')
   const [submittingFlag, setSubmittingFlag] = useState(false)
+  const [hintDraft, setHintDraft] = useState('')
+  const [sendingHint, setSendingHint] = useState(false)
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null)
   const [writeup, setWriteup] = useState<KernelWriteupOut | null>(null)
-  const traceEndRef = useRef<HTMLDivElement | null>(null)
+  const traceBoxRef = useRef<HTMLDivElement | null>(null)
+  const userToggledRef = useRef(false)
 
-  // Auto-open when switching to an empty challenge session; stay compact when viewing long chat history
+  // Reset user toggle override when switching to a different challenge
   useEffect(() => {
-    setPanelOpen(!hasChatMessages)
-  }, [challengeRef.id, hasChatMessages])
+    userToggledRef.current = false
+    const solving =
+      challengeRef.status === 'solving' ||
+      challengeRef.status === 'environment_ready' ||
+      challengeRef.status === 'submitting'
+    setPanelOpen(!hasChatMessages || solving)
+  }, [challengeRef.id, challengeRef.status, hasChatMessages])
 
   const loadChallenge = useCallback(async () => {
     try {
@@ -280,9 +293,17 @@ export function ChallengeCockpit({
     }
   }, [effectiveScanId])
 
+  // Auto-open trace panel whenever background auto-solve becomes active (unless user explicitly collapsed it)
   useEffect(() => {
-    if (panelOpen && activeTab === 'trace') {
-      traceEndRef.current?.scrollIntoView({ behavior: 'auto' })
+    if (isSolving && !userToggledRef.current) {
+      setPanelOpen(true)
+      setActiveTab('trace')
+    }
+  }, [isSolving])
+
+  useEffect(() => {
+    if (panelOpen && activeTab === 'trace' && traceBoxRef.current) {
+      traceBoxRef.current.scrollTop = traceBoxRef.current.scrollHeight
     }
   }, [events.length, panelOpen, activeTab])
 
@@ -337,6 +358,21 @@ export function ChallengeCockpit({
       push(err instanceof ApiClientError ? err.message : '提交 Flag 失败', 'error')
     } finally {
       setSubmittingFlag(false)
+    }
+  }
+
+  const handleSendHint = async () => {
+    const val = hintDraft.trim()
+    if (!val || !effectiveScanId || sendingHint) return
+    setSendingHint(true)
+    try {
+      await api.postScanHint(effectiveScanId, val)
+      setHintDraft('')
+      push('已向后台自动解题智能体注入人工线索', 'success')
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '注入线索失败', 'error')
+    } finally {
+      setSendingHint(false)
     }
   }
 
@@ -396,7 +432,10 @@ export function ChallengeCockpit({
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={() => setPanelOpen((v) => !v)}
+            onClick={() => {
+              userToggledRef.current = true
+              setPanelOpen((v) => !v)
+            }}
             className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-subtle px-2 py-1 text-xs font-medium text-ink transition-colors hover:border-accent/50"
             title={panelOpen ? '收起题目驾驶舱与自动解题流' : '展开题目驾驶舱与自动解题流'}
           >
@@ -595,25 +634,52 @@ export function ChallengeCockpit({
             </div>
 
             {activeTab === 'trace' ? (
-              <div className="max-h-[34vh] space-y-1.5 overflow-y-auto rounded-xl border border-line bg-canvas/70 p-2.5">
-                {loadingEvents && events.length === 0 ? (
-                  <div className="flex items-center gap-2 py-4 text-xs text-ink-muted">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    正在拉取自动解题过程记录…
+              <div className="space-y-2">
+                <div
+                  ref={traceBoxRef}
+                  className="max-h-[38vh] space-y-1.5 overflow-y-auto rounded-xl border border-line bg-canvas/80 p-2.5"
+                >
+                  {loadingEvents && events.length === 0 ? (
+                    <div className="flex items-center gap-2 py-4 text-xs text-ink-muted">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      正在拉取自动解题过程记录…
+                    </div>
+                  ) : events.length === 0 ? (
+                    <div className="py-5 text-center text-xs text-ink-muted">
+                      {isSolving
+                        ? '任务已受理，正在等待 Worker 启动靶机并推送首条执行事件…'
+                        : '暂无后台自动解题记录，可点击右上角「启动自动解题」或直接在下方对话交互。'}
+                    </div>
+                  ) : (
+                    events.map((ev) => <SolveEventRow key={ev.id} ev={ev} />)
+                  )}
+                </div>
+
+                {isSolving && effectiveScanId && (
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={hintDraft}
+                      onChange={(e) => setHintDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault()
+                          void handleSendHint()
+                        }
+                      }}
+                      placeholder="向正在运行的后台自动解题引擎注入实时线索（如漏洞点、利用思路）…"
+                      className="h-8 flex-1 text-xs"
+                    />
+                    <Button
+                      size="sm"
+                      variant="accent"
+                      loading={sendingHint}
+                      disabled={!hintDraft.trim()}
+                      onClick={() => void handleSendHint()}
+                    >
+                      <Send className="h-3 w-3" />
+                      注入线索
+                    </Button>
                   </div>
-                ) : events.length === 0 ? (
-                  <div className="py-5 text-center text-xs text-ink-muted">
-                    {isSolving
-                      ? '任务已受理，正在等待 Worker 启动靶机并推送首条执行事件…'
-                      : '暂无后台自动解题记录，可点击右上角「启动自动解题」或直接在下方对话交互。'}
-                  </div>
-                ) : (
-                  <>
-                    {events.map((ev) => (
-                      <SolveEventRow key={ev.id} ev={ev} />
-                    ))}
-                    <div ref={traceEndRef} />
-                  </>
                 )}
               </div>
             ) : (

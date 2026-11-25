@@ -852,6 +852,11 @@ export function ChatPage() {
   const [resuming, setResuming] = useState(false)
   const [showScrollBottom, setShowScrollBottom] = useState(false)
 
+  const resumingRef = useRef(false)
+  useEffect(() => {
+    resumingRef.current = resuming
+  }, [resuming])
+
   const abortRef = useRef<AbortController | null>(null)
   const scrollAreaRef = useRef<HTMLDivElement | null>(null)
   const bottomRef = useRef<HTMLDivElement | null>(null)
@@ -995,7 +1000,8 @@ export function ChatPage() {
   )
 
   const isServerRunning = Boolean(
-    detail?.running ||
+    resuming ||
+      detail?.running ||
       activeSessionSummary?.running ||
       turns.some((t) => t.status === 'running'),
   )
@@ -1054,21 +1060,34 @@ export function ChatPage() {
     }
 
     const runAttach = async () => {
+      // When triggered by manual resume, give backend ~220ms to run hub.begin() so we don't hit stale ended flag
+      if (resumingRef.current) {
+        await new Promise((r) => window.setTimeout(r, 220))
+        if (!alive) return
+      }
+
       let ended = false
+      let sawFrames = false
       try {
         await api.attachChatStream(
           activeId,
           {
-            onPhase: applyPhase,
+            onPhase: (p) => {
+              sawFrames = true
+              applyPhase(p)
+            },
             onDelta: (chunk) => {
+              sawFrames = true
               streamBufRef.current.text += chunk
               scheduleStreamFlush()
             },
             onReasoning: (chunk) => {
+              sawFrames = true
               streamBufRef.current.reasoning += chunk
               scheduleStreamFlush()
             },
             onToolOutput: (p) => {
+              sawFrames = true
               const c = p.chunk || p.text || ''
               if (c) {
                 streamBufRef.current.toolOut = (streamBufRef.current.toolOut + c).slice(-8000)
@@ -1076,11 +1095,18 @@ export function ChatPage() {
               }
             },
             onToolProgress: (p) => {
+              sawFrames = true
               if (p.tool) setStreamTool(p.tool)
               if (typeof p.seconds === 'number') setStreamToolSec(p.seconds)
             },
-            onMessage: appendPersistedMessage,
-            onAwaiting: () => setStreamPhase('等待人工审批工具调用'),
+            onMessage: (m) => {
+              sawFrames = true
+              appendPersistedMessage(m)
+            },
+            onAwaiting: () => {
+              sawFrames = true
+              setStreamPhase('等待人工审批工具调用')
+            },
             onError: (message) => push(message, 'error'),
             onDone: () => {
               ended = true
@@ -1094,7 +1120,7 @@ export function ChatPage() {
 
       if (!alive) return
 
-      if (ended) {
+      if (ended && (sawFrames || !resumingRef.current)) {
         resetStreamBuffers()
         setStreamPhase(null)
         setStreamRound(null)
@@ -1104,13 +1130,14 @@ export function ChatPage() {
         return
       }
 
-      // Fallback loop: if SSE stream ended without a done frame (e.g. background resumer),
+      // Fallback loop: if SSE stream ended without a done frame (or before resume hub.begin()),
       // sync DB + instant-wake long-poll until turn completes.
       let cursor = 0
       while (alive) {
         try {
           const snap = await api.pollChatLive(activeId, cursor)
           if (!alive) break
+          if (snap.frames.length > 0) sawFrames = true
           cursor = snap.next
           for (const frame of snap.frames) {
             const data = (frame.data || {}) as Record<string, unknown>
@@ -1144,6 +1171,12 @@ export function ChatPage() {
           }
 
           if (snap.ended || ended) {
+            if (!sawFrames && resumingRef.current) {
+              // Resume HTTP request is still starting hub.begin(); wait briefly and re-poll
+              cursor = 0
+              await new Promise((r) => window.setTimeout(r, 350))
+              continue
+            }
             resetStreamBuffers()
             setStreamPhase(null)
             await Promise.all([loadDetail(activeId, { silent: true }), loadSessions()])
@@ -1159,7 +1192,7 @@ export function ChatPage() {
             if (freshDetail) setDetail(freshDetail)
             if (freshTurns) {
               setTurns(freshTurns)
-              if (!freshTurns.some((t) => t.status === 'running')) {
+              if (!freshTurns.some((t) => t.status === 'running') && !resumingRef.current) {
                 resetStreamBuffers()
                 setStreamPhase(null)
                 await loadSessions()
@@ -1317,14 +1350,19 @@ export function ChatPage() {
   }
 
   const handleResumeTurn = async (runId: string) => {
-    if (!activeId) return
+    if (!activeId || resuming) return
     setResuming(true)
+    setShowScrollBottom(false)
+    setStreamPhase('正在接手并续跑中断的智能体轮次…')
+    // Optimistically mark session running so the live SSE reattach effect subscribes to chat_live.hub immediately
+    setDetail((prev) => (prev ? { ...prev, running: true } : prev))
     try {
       await api.resumeChatTurn(activeId, runId)
-      push('已接手并恢复中断的对话轮次', 'success')
-      await loadDetail(activeId)
+      push('续跑轮次已完成', 'success')
+      await Promise.all([loadDetail(activeId, { silent: true }), loadSessions()])
     } catch (err) {
       push(err instanceof ApiClientError ? err.message : '恢复轮次失败', 'error')
+      await loadDetail(activeId, { silent: true })
     } finally {
       setResuming(false)
     }
