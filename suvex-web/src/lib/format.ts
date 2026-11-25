@@ -182,6 +182,18 @@ export const CTF_STATUS_META: Record<string, { label: string; badge: string }> =
     label: '解题中',
     badge: 'bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-950/50 dark:text-indigo-300 dark:border-indigo-900',
   },
+  environment_ready: {
+    label: '解题中 · 靶机就绪',
+    badge: 'bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-950/50 dark:text-indigo-300 dark:border-indigo-900',
+  },
+  submitting: {
+    label: '提交中',
+    badge: 'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-950/50 dark:text-amber-300 dark:border-amber-900',
+  },
+  candidate_ready: {
+    label: '待交 Flag',
+    badge: 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-900',
+  },
   candidate: {
     label: '待交 Flag',
     badge: 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-900',

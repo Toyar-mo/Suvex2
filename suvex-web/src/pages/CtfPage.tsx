@@ -165,15 +165,64 @@ export function CtfPage() {
       .map((k) => ({ id: k, label: CANONICAL_LABELS[k] || k, count: counts.get(k) || 0 }))
   }, [challenges])
 
+  const runningChallengeIds = useMemo(
+    () => new Set(queue?.challenges ?? []),
+    [queue?.challenges],
+  )
+
+  const isActiveSolving = useCallback(
+    (c: KernelChallengeOut) =>
+      c.status === 'solving' ||
+      c.status === 'environment_ready' ||
+      c.status === 'submitting' ||
+      c.status === 'queued' ||
+      runningChallengeIds.has(c.id),
+    [runningChallengeIds],
+  )
+
+  const statusCounts = useMemo(() => {
+    const counts = {
+      all: challenges.length,
+      unsolved: 0,
+      solving: 0,
+      candidate_ready: 0,
+      solved: 0,
+      failed: 0,
+    }
+    for (const c of challenges) {
+      if (isActiveSolving(c)) {
+        counts.solving += 1
+      } else if (c.status === 'candidate_ready' || c.status === 'candidate') {
+        counts.candidate_ready += 1
+      } else if (c.status === 'solved') {
+        counts.solved += 1
+      } else if (c.status === 'failed') {
+        counts.failed += 1
+      } else {
+        counts.unsolved += 1
+      }
+    }
+    return counts
+  }, [challenges, isActiveSolving])
+
   const filtered = useMemo(() => {
     return challenges.filter((c) => {
       if (categoryFilter && (c.canonicalCategory || 'other').toLowerCase() !== categoryFilter) {
         return false
       }
+      if (statusFilter === 'solving') {
+        return isActiveSolving(c)
+      }
+      if (statusFilter === 'candidate_ready') {
+        return c.status === 'candidate_ready' || c.status === 'candidate'
+      }
+      if (statusFilter === 'unsolved') {
+        return c.status === 'unsolved' && !runningChallengeIds.has(c.id)
+      }
       if (statusFilter && c.status !== statusFilter) return false
       return true
     })
-  }, [challenges, categoryFilter, statusFilter])
+  }, [challenges, categoryFilter, statusFilter, isActiveSolving, runningChallengeIds])
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) =>
@@ -537,19 +586,31 @@ export function CtfPage() {
           )}
         </Card>
 
-        <Card className="p-4">
-          <div className="flex items-center justify-between text-xs text-ink-secondary">
-            <span>自动解题队列</span>
-            <Trophy className="h-3.5 w-3.5 text-ink-muted" />
-          </div>
-          <div className="mt-2 font-mono text-2xl font-semibold tabular-nums text-ink">
-            {queue ? `${queue.running} / ${queue.limit}` : '0 / 0'}
-          </div>
-          <p className="mt-0.5 text-[11px] text-ink-muted">
-            排队等待 {queue?.queued ?? 0} 题 · 已解出{' '}
-            {challenges.filter((c) => c.status === 'solved').length} / {challenges.length}
-          </p>
-        </Card>
+        <button
+          type="button"
+          onClick={() => setStatusFilter((prev) => (prev === 'solving' ? '' : 'solving'))}
+          className="text-left"
+          title="点击快速筛选「解题中」的题目"
+        >
+          <Card
+            className={cn(
+              'h-full p-4 transition-colors hover:border-accent/60',
+              statusFilter === 'solving' && 'border-accent ring-1 ring-accent/40',
+            )}
+          >
+            <div className="flex items-center justify-between text-xs text-ink-secondary">
+              <span>自动解题队列</span>
+              <Trophy className="h-3.5 w-3.5 text-ink-muted" />
+            </div>
+            <div className="mt-2 font-mono text-2xl font-semibold tabular-nums text-ink">
+              {queue ? `${queue.running} / ${queue.limit}` : '0 / 0'}
+            </div>
+            <p className="mt-0.5 text-[11px] text-ink-muted">
+              排队等待 {queue?.queued ?? 0} 题 · 已解出{' '}
+              {challenges.filter((c) => c.status === 'solved').length} / {challenges.length}
+            </p>
+          </Card>
+        </button>
 
         <Card className="p-4">
           <div className="flex items-center justify-between text-xs text-ink-secondary">
@@ -623,13 +684,14 @@ export function CtfPage() {
             size="sm"
             value={statusFilter}
             onChange={setStatusFilter}
-            className="min-w-[112px]"
+            className="min-w-[132px]"
             options={[
-              { value: '', label: '全部状态' },
-              { value: 'unsolved', label: '未解出' },
-              { value: 'solving', label: '解题中' },
-              { value: 'candidate_ready', label: '待交 Flag' },
-              { value: 'solved', label: '已解出' },
+              { value: '', label: '全部状态', badge: `${statusCounts.all}` },
+              { value: 'solving', label: '解题中', badge: `${statusCounts.solving}` },
+              { value: 'candidate_ready', label: '待交 Flag', badge: `${statusCounts.candidate_ready}` },
+              { value: 'unsolved', label: '未解出', badge: `${statusCounts.unsolved}` },
+              { value: 'solved', label: '已解出', badge: `${statusCounts.solved}` },
+              { value: 'failed', label: '未成功', badge: `${statusCounts.failed}` },
             ]}
           />
         </div>
@@ -656,38 +718,58 @@ export function CtfPage() {
           <Skeleton className="h-44 w-full" />
         </div>
       ) : filtered.length === 0 ? (
-        <EmptyState
-          icon={<Flag className="h-5 w-5" />}
-          title="题板为空"
-          description={
-            hasBoundAccount
-              ? '已绑定账号。请点击「同步题板」通过 CTF2 官方远程 HTTP MCP 批量拉取练习场/赛事题目，或点击「选择题库」精确同步指定题场。'
-              : '请先绑定 CTF 竞赛平台账号并点击「同步题板」，或直接通过题目链接拉取单题。'
-          }
-          action={
-            hasBoundAccount ? (
-              <div className="flex flex-wrap items-center justify-center gap-2">
-                <Button variant="primary" size="sm" loading={syncing} onClick={() => void handleSync()}>
-                  <RefreshCw className="h-3.5 w-3.5" />
-                  立即通过 MCP 同步题板
-                </Button>
-                <Button variant="secondary" size="sm" onClick={() => void handleOpenSourcePicker()}>
-                  <ListFilter className="h-3.5 w-3.5" />
-                  选择指定题库
-                </Button>
-              </div>
-            ) : (
-              <Button variant="primary" size="sm" onClick={() => setBindOpen(true)}>
-                绑定平台账号
+        challenges.length > 0 ? (
+          <EmptyState
+            icon={<ListFilter className="h-5 w-5" />}
+            title="当前筛选条件下暂无题目"
+            description={`题板共有 ${challenges.length} 道题，可切换方向或状态条件，或一键重置筛选查看全部题目。`}
+            action={
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setCategoryFilter('')
+                  setStatusFilter('')
+                }}
+              >
+                重置筛选条件
               </Button>
-            )
-          }
-        />
+            }
+          />
+        ) : (
+          <EmptyState
+            icon={<Flag className="h-5 w-5" />}
+            title="题板为空"
+            description={
+              hasBoundAccount
+                ? '已绑定账号。请点击「同步题板」通过 CTF2 官方远程 HTTP MCP 批量拉取练习场/赛事题目，或点击「选择题库」精确同步指定题场。'
+                : '请先绑定 CTF 竞赛平台账号并点击「同步题板」，或直接通过题目链接拉取单题。'
+            }
+            action={
+              hasBoundAccount ? (
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  <Button variant="primary" size="sm" loading={syncing} onClick={() => void handleSync()}>
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    立即通过 MCP 同步题板
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={() => void handleOpenSourcePicker()}>
+                    <ListFilter className="h-3.5 w-3.5" />
+                    选择指定题库
+                  </Button>
+                </div>
+              ) : (
+                <Button variant="primary" size="sm" onClick={() => setBindOpen(true)}>
+                  绑定平台账号
+                </Button>
+              )
+            }
+          />
+        )
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {filtered.map((chal) => {
             const st = CTF_STATUS_META[chal.status] || CTF_STATUS_META.unsolved
-            const isSolving = chal.status === 'solving' || chal.status === 'queued'
+            const isSolving = isActiveSolving(chal)
             const checked = selectedIds.includes(chal.id)
             return (
               <Card
@@ -708,7 +790,7 @@ export function CtfPage() {
                         aria-label={`选择题目 ${chal.title}`}
                       />
                       <Badge className="font-mono text-[10px]">{chal.category}</Badge>
-                      <Badge pulse={chal.status === 'solving'} className={st.badge}>
+                      <Badge pulse={isSolving} className={st.badge}>
                         {st.label}
                       </Badge>
                     </div>
