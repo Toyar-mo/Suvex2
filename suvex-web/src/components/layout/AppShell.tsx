@@ -235,7 +235,12 @@ export function AppShell({ children }: { children?: ReactNode }) {
   }
 
   return (
-    <div className="flex min-h-screen bg-canvas text-ink">
+    <div
+      className={cn(
+        'flex bg-canvas text-ink',
+        fillsViewport ? 'h-screen overflow-hidden' : 'min-h-screen',
+      )}
+    >
       {/* Desktop Sidebar */}
       <aside
         className={cn(
@@ -257,9 +262,14 @@ export function AppShell({ children }: { children?: ReactNode }) {
       )}
 
       {/* Main Column */}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div
+        className={cn(
+          'flex min-w-0 flex-1 flex-col',
+          fillsViewport && 'h-full min-h-0 overflow-hidden',
+        )}
+      >
         {/* Mobile Topbar */}
-        <header className="sticky top-0 z-30 flex h-13 items-center justify-between border-b border-line bg-surface/90 px-4 py-2.5 backdrop-blur md:hidden">
+        <header className="sticky top-0 z-30 flex h-13 shrink-0 items-center justify-between border-b border-line bg-surface/90 px-4 py-2.5 backdrop-blur md:hidden">
           <div className="flex items-center gap-2.5">
             <button
               type="button"
@@ -295,7 +305,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
           className={cn(
             'min-w-0 flex-1',
             fillsViewport
-              ? 'h-[calc(100vh-49px)] overflow-hidden md:h-screen'
+              ? 'flex min-h-0 flex-col overflow-hidden'
               : 'mx-auto w-full max-w-[1260px] px-5 py-7 sm:px-8 sm:py-9',
           )}
         >

@@ -2,19 +2,24 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   Archive,
+  ArrowDown,
   Bot,
   Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  Copy,
   Cpu,
   Download,
+  Flag,
   FolderOpen,
   GitBranch,
   GitFork,
   ListTodo,
   Loader2,
   MessagesSquare,
+  Minimize2,
+  PanelLeft,
   Paperclip,
   Pin,
   Play,
@@ -24,14 +29,17 @@ import {
   ShieldAlert,
   Sparkles,
   Square,
+  Terminal,
   Trash2,
+  User,
   Workflow,
   Wrench,
   X,
+  XCircle,
 } from 'lucide-react'
 import { api, ApiClientError } from '@/lib/api'
 import { useToast } from '@/lib/toast'
-import { formatBytes, formatRelativeTime } from '@/lib/format'
+import { formatBytes, formatCompactNumber, formatRelativeTime } from '@/lib/format'
 import type {
   AgentProfileOut,
   ChatAttachmentOut,
@@ -49,21 +57,144 @@ import { Badge, Button, Drawer, EmptyState } from '@/components/ui/primitives'
 import { MarkdownView } from '@/components/ui/MarkdownView'
 import { cn } from '@/lib/cn'
 
-function ReasoningAccordion({ text, streaming }: { text: string; streaming?: boolean }) {
+/* --------------------------------------------------------------------------
+   Helpers: Argument preview, Flag extraction, and Message Grouping
+   -------------------------------------------------------------------------- */
+
+function summarizeToolArgs(toolName: string | null, args: Record<string, unknown> | null): string {
+  if (!args || Object.keys(args).length === 0) return ''
+  const name = (toolName || '').toLowerCase()
+  const str = (key: string) => (typeof args[key] === 'string' ? (args[key] as string).trim() : '')
+
+  if (name === 'run_shell' || name === 'exec' || name === 'shell') {
+    const cmd = str('command') || str('cmd') || str('script')
+    if (cmd) return cmd.split('\n')[0].slice(0, 110)
+  }
+  if (name === 'call_mcp' || name === 'describe_mcp') {
+    const srv = str('server') || str('name')
+    const tool = str('tool')
+    if (srv || tool) return [srv, tool].filter(Boolean).join(' · ')
+  }
+  if (name.includes('file') || name.includes('read') || name.includes('write')) {
+    const p = str('path') || str('file_path') || str('filename')
+    if (p) return p
+  }
+  if (name.includes('http') || name.includes('fetch') || name.includes('browse')) {
+    const method = str('method')
+    const url = str('url') || str('target')
+    if (url) return method ? `${method.toUpperCase()} ${url}` : url
+  }
+  for (const key of ['command', 'target', 'url', 'path', 'query', 'tool', 'name', 'flag']) {
+    const v = str(key)
+    if (v) return v.split('\n')[0].slice(0, 100)
+  }
+  const firstEntry = Object.entries(args)[0]
+  if (firstEntry) {
+    const val = typeof firstEntry[1] === 'string' ? firstEntry[1] : JSON.stringify(firstEntry[1])
+    return `${firstEntry[0]}=${String(val).slice(0, 80)}`
+  }
+  return ''
+}
+
+function extractFlags(text: string): string[] {
+  if (!text) return []
+  const matches = text.match(/\b(?:CTF2|DASCTF|flag|FLAG|ctf)\{[^{}\s]{4,120}\}/g)
+  if (!matches) return []
+  return Array.from(new Set(matches))
+}
+
+type TraceItem =
+  | { kind: 'tool'; msg: ChatMessageOut }
+  | { kind: 'thought'; msg: ChatMessageOut }
+
+type DisplayBlock =
+  | { kind: 'user'; msg: ChatMessageOut }
+  | { kind: 'assistant'; msg: ChatMessageOut }
+  | { kind: 'trace'; id: string; items: TraceItem[] }
+
+function groupConversationMessages(messages: ChatMessageOut[]): DisplayBlock[] {
+  const blocks: DisplayBlock[] = []
+  let pendingTrace: TraceItem[] = []
+
+  const flushTrace = () => {
+    if (pendingTrace.length === 0) return
+    blocks.push({
+      kind: 'trace',
+      id: `trace-${pendingTrace[0].msg.id}`,
+      items: pendingTrace,
+    })
+    pendingTrace = []
+  }
+
+  for (const msg of messages) {
+    if (msg.role === 'user') {
+      flushTrace()
+      blocks.push({ kind: 'user', msg })
+      continue
+    }
+
+    if (msg.role === 'tool' || msg.toolName) {
+      pendingTrace.push({ kind: 'tool', msg })
+      continue
+    }
+
+    const hasContent = Boolean((msg.content || '').trim())
+    const hasReasoning = Boolean((msg.reasoning || '').trim())
+
+    // Empty assistant tool-calling stub: skip completely (no empty ghost cards!)
+    if (!hasContent && !hasReasoning) {
+      continue
+    }
+
+    // Assistant turn that only produced internal thinking before a tool call
+    if (!hasContent && hasReasoning) {
+      pendingTrace.push({ kind: 'thought', msg })
+      continue
+    }
+
+    flushTrace()
+    blocks.push({ kind: 'assistant', msg })
+  }
+
+  flushTrace()
+  return blocks
+}
+
+/* --------------------------------------------------------------------------
+   Subcomponents: Reasoning, Execution Trace, User Bubble, Assistant Turn
+   -------------------------------------------------------------------------- */
+
+function ReasoningAccordion({
+  text,
+  streaming,
+  compact,
+}: {
+  text: string
+  streaming?: boolean
+  compact?: boolean
+}) {
   const [open, setOpen] = useState(Boolean(streaming))
   return (
-    <div className="mb-2.5 rounded-lg border border-line bg-subtle/70">
+    <div
+      className={cn(
+        'rounded-lg border border-line-subtle bg-subtle/60',
+        compact ? 'my-1' : 'mb-3',
+      )}
+    >
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] font-medium text-ink-secondary hover:text-ink"
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] font-medium text-ink-secondary transition-colors hover:text-ink"
       >
         {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
         <Sparkles className="h-3 w-3 text-accent" />
         <span>{streaming ? '正在推理思考…' : '推理思考过程'}</span>
+        <span className="ml-auto font-mono text-[10px] text-ink-muted">
+          {text.length} 字
+        </span>
       </button>
       {open && (
-        <div className="border-t border-line px-3 py-2 font-mono text-[11px] leading-relaxed text-ink-secondary whitespace-pre-wrap">
+        <div className="max-h-64 overflow-y-auto border-t border-line-subtle px-3 py-2 font-mono text-[11px] leading-relaxed text-ink-secondary whitespace-pre-wrap">
           {text}
         </div>
       )}
@@ -71,52 +202,86 @@ function ReasoningAccordion({ text, streaming }: { text: string; streaming?: boo
   )
 }
 
-function ToolCallCard({
+function ToolStepRow({
   msg,
   onApprove,
 }: {
   msg: ChatMessageOut
   onApprove?: (messageId: string, approve: boolean) => void
 }) {
-  const [expanded, setExpanded] = useState(msg.approvalStatus === 'pending')
   const isPending = msg.approvalStatus === 'pending'
+  const [expanded, setExpanded] = useState(isPending)
+  const [copied, setCopied] = useState(false)
+  const preview = useMemo(
+    () => summarizeToolArgs(msg.toolName, msg.toolArgs),
+    [msg.toolName, msg.toolArgs],
+  )
+  const isShell = (msg.toolName || '').toLowerCase().includes('shell')
+
+  const handleCopyOut = () => {
+    void navigator.clipboard?.writeText(msg.content || '')
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1400)
+  }
 
   return (
     <div
       className={cn(
-        'my-2 rounded-lg border bg-surface text-xs shadow-editorial',
+        'rounded-lg border transition-colors',
         isPending
-          ? 'border-amber-300 dark:border-amber-800'
+          ? 'border-amber-400/60 bg-amber-50/40 dark:border-amber-700/70 dark:bg-amber-950/25'
           : msg.toolFailed
-            ? 'border-red-200 dark:border-red-900/70'
-            : 'border-line',
+            ? 'border-red-300/60 bg-red-50/30 dark:border-red-900/60 dark:bg-red-950/20'
+            : 'border-line-subtle bg-surface/80 hover:border-line',
       )}
     >
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-center justify-between gap-2 px-3.5 py-2 text-left"
+        className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs"
       >
-        <div className="flex min-w-0 items-center gap-2">
-          {expanded ? (
-            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-ink-muted" />
-          ) : (
-            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-ink-muted" />
+        {expanded ? (
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-ink-muted" />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-ink-muted" />
+        )}
+
+        <span
+          className={cn(
+            'h-1.5 w-1.5 shrink-0 rounded-full',
+            isPending
+              ? 'animate-pulse bg-amber-500'
+              : msg.toolFailed
+                ? 'bg-red-500'
+                : 'bg-emerald-500',
           )}
+        />
+
+        {isShell ? (
+          <Terminal className="h-3.5 w-3.5 shrink-0 text-accent" />
+        ) : (
           <Wrench className="h-3.5 w-3.5 shrink-0 text-accent" />
-          <span className="truncate font-mono font-medium text-ink">
-            {msg.toolName || 'tool_call'}
+        )}
+
+        <span className="shrink-0 font-mono font-medium text-ink">
+          {msg.toolName || 'tool_call'}
+        </span>
+
+        {preview && (
+          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-muted">
+            {isShell ? `$ ${preview}` : preview}
           </span>
+        )}
+
+        <div className="ml-auto flex shrink-0 items-center gap-2">
           {msg.durationMs != null && (
             <span className="font-mono text-[10px] tabular-nums text-ink-muted">
               {(msg.durationMs / 1000).toFixed(2)}s
             </span>
           )}
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5">
           {isPending && (
             <Badge className="border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
-              待人工审批
+              待审批
             </Badge>
           )}
           {msg.approvalStatus === 'approved' && (
@@ -131,36 +296,46 @@ function ToolCallCard({
           )}
           {msg.toolFailed && !msg.approvalStatus && (
             <Badge className="border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/50 dark:text-red-300">
-              执行异常
+              异常
             </Badge>
           )}
         </div>
       </button>
 
       {expanded && (
-        <div className="space-y-2.5 border-t border-line bg-subtle/50 px-3.5 py-3">
+        <div className="space-y-2.5 border-t border-line-subtle bg-subtle/60 px-3.5 py-3">
           {msg.toolArgs && Object.keys(msg.toolArgs).length > 0 && (
             <div>
               <p className="mb-1 font-mono text-[10px] uppercase tracking-wider text-ink-muted">
-                Arguments
+                Input
               </p>
-              <pre className="max-h-48 overflow-auto rounded-md border border-line bg-surface p-2.5 font-mono text-[11px] text-ink">
+              <pre className="max-h-44 overflow-auto rounded-lg border border-line bg-canvas p-2.5 font-mono text-[11px] leading-relaxed text-ink">
                 {JSON.stringify(msg.toolArgs, null, 2)}
               </pre>
             </div>
           )}
           {msg.content && (
             <div>
-              <p className="mb-1 font-mono text-[10px] uppercase tracking-wider text-ink-muted">
-                Output
-              </p>
-              <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md border border-line bg-surface p-2.5 font-mono text-[11px] text-ink-secondary">
+              <div className="mb-1 flex items-center justify-between">
+                <p className="font-mono text-[10px] uppercase tracking-wider text-ink-muted">
+                  Output
+                </p>
+                <button
+                  type="button"
+                  onClick={handleCopyOut}
+                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-ink-muted hover:bg-wash hover:text-ink"
+                >
+                  {copied ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
+                  {copied ? '已复制' : '复制输出'}
+                </button>
+              </div>
+              <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-line bg-canvas p-2.5 font-mono text-[11px] leading-relaxed text-ink-secondary">
                 {msg.content}
               </pre>
             </div>
           )}
           {isPending && onApprove && (
-            <div className="flex items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-2 dark:border-amber-900 dark:bg-amber-950/40">
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-300/70 bg-amber-50/70 px-3 py-2 dark:border-amber-800 dark:bg-amber-950/50">
               <span className="flex items-center gap-1.5 text-xs text-amber-900 dark:text-amber-200">
                 <ShieldAlert className="h-3.5 w-3.5" />
                 该工具调用需要人工确认后才可执行
@@ -182,25 +357,277 @@ function ToolCallCard({
   )
 }
 
+function ExecutionTraceGroup({
+  items,
+  onApprove,
+}: {
+  items: TraceItem[]
+  onApprove?: (messageId: string, approve: boolean) => void
+}) {
+  const toolItems = items.filter((i) => i.kind === 'tool')
+  const hasPending = toolItems.some((i) => i.msg.approvalStatus === 'pending')
+  const failedCount = toolItems.filter((i) => i.msg.toolFailed).length
+  const totalMs = toolItems.reduce((sum, i) => sum + (i.msg.durationMs || 0), 0)
+
+  // Auto-expand when approval is pending or when there are 1-3 steps; collapse long histories nicely
+  const [open, setOpen] = useState(hasPending || toolItems.length <= 3)
+
+  return (
+    <div className="rounded-xl border border-line bg-subtle/50 px-3.5 py-2.5">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full flex-wrap items-center justify-between gap-2 text-left text-xs"
+      >
+        <div className="flex items-center gap-2">
+          {open ? (
+            <ChevronDown className="h-3.5 w-3.5 text-ink-muted" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 text-ink-muted" />
+          )}
+          {hasPending ? (
+            <ShieldAlert className="h-3.5 w-3.5 text-amber-500" />
+          ) : failedCount > 0 ? (
+            <XCircle className="h-3.5 w-3.5 text-amber-500" />
+          ) : (
+            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+          )}
+          <span className="font-medium text-ink">
+            智能体执行轨迹 · {toolItems.length} 步工具调用
+          </span>
+          {failedCount > 0 && (
+            <Badge className="border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/50 dark:text-red-300">
+              {failedCount} 项异常
+            </Badge>
+          )}
+          {hasPending && (
+            <Badge className="border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
+              待审批
+            </Badge>
+          )}
+        </div>
+        <div className="flex items-center gap-2 font-mono text-[11px] text-ink-muted">
+          {totalMs > 0 && <span>{(totalMs / 1000).toFixed(1)}s</span>}
+          <span>{open ? '收起' : '展开详情'}</span>
+        </div>
+      </button>
+
+      {open && (
+        <div className="mt-2.5 space-y-1.5 border-l border-line-strong pl-3 ml-1.5">
+          {items.map((item) =>
+            item.kind === 'thought' ? (
+              <ReasoningAccordion
+                key={item.msg.id}
+                text={item.msg.reasoning || ''}
+                compact
+              />
+            ) : (
+              <ToolStepRow key={item.msg.id} msg={item.msg} onApprove={onApprove} />
+            ),
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function UserMessageBlock({
+  msg,
+  onFork,
+}: {
+  msg: ChatMessageOut
+  onFork: (seq: number) => void
+}) {
+  const lines = (msg.content || '').split('\n')
+  const isLong = lines.length > 14 || (msg.content || '').length > 900
+  const [expanded, setExpanded] = useState(!isLong)
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = () => {
+    void navigator.clipboard?.writeText(msg.content || '')
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1400)
+  }
+
+  return (
+    <div className="group flex flex-col items-end">
+      <div className="mb-1 flex items-center gap-2 px-1 text-[11px] text-ink-muted">
+        <div className="hidden items-center gap-1 group-hover:flex">
+          <button
+            type="button"
+            onClick={handleCopy}
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-wash hover:text-ink"
+            title="复制内容"
+          >
+            {copied ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
+          </button>
+          <button
+            type="button"
+            onClick={() => onFork(msg.seq)}
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-wash hover:text-ink"
+            title="从此消息分叉新分支"
+          >
+            <GitFork className="h-3 w-3" />
+            <span>分叉</span>
+          </button>
+        </div>
+        <span className="font-mono">{formatRelativeTime(msg.createdAt)}</span>
+        <span className="inline-flex items-center gap-1 font-medium text-ink-secondary">
+          <User className="h-3 w-3" />
+          你
+        </span>
+      </div>
+
+      <div className="relative max-w-[88%] rounded-2xl rounded-tr-sm border border-line bg-subtle px-4 py-3 text-sm leading-relaxed text-ink shadow-editorial dark:border-indigo-500/20 dark:bg-[#1a1c28]">
+        <p
+          className={cn(
+            'whitespace-pre-wrap break-words',
+            !expanded && 'line-clamp-[10]',
+          )}
+        >
+          {msg.content}
+        </p>
+        {isLong && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="mt-2 inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:underline"
+          >
+            {expanded ? '收起长文本' : `展开全部（${lines.length} 行）`}
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function AssistantMessageBlock({
+  msg,
+  onFork,
+}: {
+  msg: ChatMessageOut
+  onFork: (seq: number) => void
+}) {
+  const [copied, setCopied] = useState(false)
+  const [copiedFlag, setCopiedFlag] = useState<string | null>(null)
+  const flags = useMemo(() => extractFlags(msg.content || ''), [msg.content])
+
+  const handleCopy = () => {
+    void navigator.clipboard?.writeText(msg.content || '')
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1500)
+  }
+
+  return (
+    <div className="group rounded-2xl border border-line bg-surface px-5 py-4 shadow-editorial">
+      <div className="mb-3 flex items-center justify-between gap-2 border-b border-line-subtle pb-2.5 text-[11px]">
+        <div className="flex items-center gap-2">
+          <span className="flex h-5 w-5 items-center justify-center rounded-md bg-accent-soft font-mono text-[10px] font-bold text-accent">
+            S2
+          </span>
+          <span className="font-medium text-ink">Suvex Agent</span>
+          <span className="font-mono text-ink-muted">{formatRelativeTime(msg.createdAt)}</span>
+        </div>
+        <div className="flex items-center gap-1 opacity-70 transition-opacity group-hover:opacity-100">
+          <button
+            type="button"
+            onClick={handleCopy}
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-ink-muted hover:bg-wash hover:text-ink"
+            title="复制 Markdown"
+          >
+            {copied ? (
+              <>
+                <Check className="h-3 w-3 text-emerald-500" />
+                <span className="text-emerald-600 dark:text-emerald-400">已复制</span>
+              </>
+            ) : (
+              <>
+                <Copy className="h-3 w-3" />
+                <span>复制</span>
+              </>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => onFork(msg.seq)}
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-ink-muted hover:bg-wash hover:text-ink"
+            title="从此处分叉新分支"
+          >
+            <GitFork className="h-3 w-3" />
+            <span>分叉</span>
+          </button>
+        </div>
+      </div>
+
+      {msg.reasoning && <ReasoningAccordion text={msg.reasoning} />}
+      {msg.content && <MarkdownView content={msg.content} />}
+
+      {flags.length > 0 && (
+        <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-emerald-300/60 bg-emerald-50/70 px-3.5 py-2.5 text-xs dark:border-emerald-800/70 dark:bg-emerald-950/35">
+          <Flag className="h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+          <span className="font-medium text-emerald-900 dark:text-emerald-200">检测到 Flag</span>
+          {flags.map((fl) => (
+            <button
+              key={fl}
+              type="button"
+              onClick={() => {
+                void navigator.clipboard?.writeText(fl)
+                setCopiedFlag(fl)
+                window.setTimeout(() => setCopiedFlag(null), 1600)
+              }}
+              className="inline-flex items-center gap-1.5 rounded-md border border-emerald-300/80 bg-surface px-2 py-0.5 font-mono text-[11px] text-emerald-800 transition-colors hover:bg-emerald-100/60 dark:border-emerald-700/70 dark:text-emerald-200 dark:hover:bg-emerald-900/50"
+              title="点击复制 Flag"
+            >
+              <span>{fl}</span>
+              {copiedFlag === fl ? (
+                <Check className="h-3 w-3 text-emerald-500" />
+              ) : (
+                <Copy className="h-3 w-3 opacity-70" />
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function classifyAttackStage(toolName: string): { stage: string; color: string } {
   const n = toolName.toLowerCase()
   if (/recon|scan|nmap|httpx|list|read|search|browse|fetch/.test(n)) {
-    return { stage: '侦察与测绘', color: 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900 dark:bg-blue-950/50 dark:text-blue-300' }
+    return {
+      stage: '侦察与测绘',
+      color:
+        'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900 dark:bg-blue-950/50 dark:text-blue-300',
+    }
   }
   if (/poc|exploit|shell|exec|sql|inject|submit/.test(n)) {
-    return { stage: '利用与验证', color: 'border-orange-200 bg-orange-50 text-orange-700 dark:border-orange-900 dark:bg-orange-950/50 dark:text-orange-300' }
+    return {
+      stage: '利用与验证',
+      color:
+        'border-orange-200 bg-orange-50 text-orange-700 dark:border-orange-900 dark:bg-orange-950/50 dark:text-orange-300',
+    }
   }
   if (/report|write|save|skill|todo/.test(n)) {
-    return { stage: '归档与交付', color: 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-300' }
+    return {
+      stage: '归档与交付',
+      color:
+        'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-300',
+    }
   }
   return { stage: '分析推理', color: 'border-line bg-subtle text-ink-secondary' }
 }
+
+/* --------------------------------------------------------------------------
+   Main ChatPage Component
+   -------------------------------------------------------------------------- */
 
 export function ChatPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { push } = useToast()
 
   const [sessions, setSessions] = useState<ChatSessionOut[]>([])
+  const [railOpen, setRailOpen] = useState(true)
   const [showArchived, setShowArchived] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [activeId, setActiveId] = useState<string | null>(searchParams.get('session'))
@@ -230,10 +657,13 @@ export function ChatPage() {
   const [liveToolOut, setLiveToolOut] = useState('')
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [resuming, setResuming] = useState(false)
+  const [showScrollBottom, setShowScrollBottom] = useState(false)
 
   const abortRef = useRef<AbortController | null>(null)
+  const scrollAreaRef = useRef<HTMLDivElement | null>(null)
   const bottomRef = useRef<HTMLDivElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
   const loadSessions = useCallback(async () => {
     try {
@@ -313,6 +743,14 @@ export function ChatPage() {
     }
   }, [activeId, loadDetail])
 
+  // Auto-grow composer textarea cleanly
+  useEffect(() => {
+    const el = textareaRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(Math.max(el.scrollHeight, 44), 180)}px`
+  }, [input])
+
   // Auto-reattach live polling if user opens/refreshes a running session
   useEffect(() => {
     if (!activeId || !detail?.running || streaming) return
@@ -360,9 +798,22 @@ export function ChatPage() {
     }
   }, [activeId, detail?.running, streaming, loadDetail, loadSessions])
 
+  const scrollToBottom = useCallback((smooth = true) => {
+    bottomRef.current?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto' })
+  }, [])
+
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [detail?.messages.length, streamText, streamReasoning, liveToolOut])
+    if (!showScrollBottom) {
+      scrollToBottom(false)
+    }
+  }, [detail?.messages.length, streamText, streamReasoning, liveToolOut, showScrollBottom, scrollToBottom])
+
+  const handleScrollArea = () => {
+    const el = scrollAreaRef.current
+    if (!el) return
+    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    setShowScrollBottom(distFromBottom > 240)
+  }
 
   const filteredSessions = useMemo(() => {
     const q = searchQuery.trim().toLowerCase()
@@ -370,6 +821,11 @@ export function ChatPage() {
     if (!q) return base
     return base.filter((s) => s.title.toLowerCase().includes(q))
   }, [sessions, searchQuery, showArchived])
+
+  const displayBlocks = useMemo(
+    () => groupConversationMessages(detail?.messages || []),
+    [detail?.messages],
+  )
 
   const resumableTurn = useMemo(() => {
     return turns.find((t) => t.resumable && t.status === 'interrupted') || null
@@ -386,10 +842,20 @@ export function ChatPage() {
         failed: Boolean(m.toolFailed),
         durationMs: m.durationMs,
         createdAt: m.createdAt,
-        summary: m.content.slice(0, 140),
+        summary: summarizeToolArgs(m.toolName, m.toolArgs) || m.content.slice(0, 140),
         ...classifyAttackStage(m.toolName || ''),
       }))
   }, [detail])
+
+  const activeProviderLabel = useMemo(
+    () => providers.find((p) => p.id === selectedProviderId)?.label || '默认模型',
+    [providers, selectedProviderId],
+  )
+
+  const activeProfileName = useMemo(
+    () => profiles.find((p) => p.id === selectedProfileId)?.name || '',
+    [profiles, selectedProfileId],
+  )
 
   const handleNewSession = async () => {
     try {
@@ -404,6 +870,7 @@ export function ChatPage() {
 
   const handleSelectSession = (id: string) => {
     setActiveId(id)
+    setShowScrollBottom(false)
     setSearchParams({ session: id }, { replace: true })
   }
 
@@ -412,7 +879,10 @@ export function ChatPage() {
     if (!activeId) return
     try {
       await api.updateChatSettings(activeId, { agentProfileId: profileId || null })
-      push(profileId ? '已绑定 Agent 角色画像（工具与技能边界生效）' : '已切换为平台默认角色', 'success')
+      push(
+        profileId ? '已绑定 Agent 角色画像（工具与技能边界生效）' : '已切换为平台默认角色',
+        'success',
+      )
       await loadDetail(activeId)
     } catch (err) {
       push(err instanceof ApiClientError ? err.message : '切换角色失败', 'error')
@@ -536,6 +1006,7 @@ export function ChatPage() {
     const attIds = attachments.map((a) => a.id)
     setInput('')
     setAttachments([])
+    setShowScrollBottom(false)
     setStreaming(true)
     setStreamPhase('正在连接模型…')
     setStreamText('')
@@ -655,146 +1126,178 @@ export function ChatPage() {
   }
 
   return (
-    <div className="flex h-full bg-canvas">
-      {/* Left Session Rail */}
-      <aside className="hidden w-72 shrink-0 flex-col border-r border-line bg-surface lg:flex">
-        <div className="flex items-center justify-between border-b border-line px-4 py-3.5">
-          <h2 className="text-sm font-semibold text-ink">会话线程</h2>
-          <Button size="sm" variant="primary" onClick={handleNewSession}>
-            <Plus className="h-3.5 w-3.5" />
-            新建
-          </Button>
-        </div>
-
-        <div className="border-b border-line px-3 py-2.5">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-ink-muted" />
-            <input
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="搜索历史会话..."
-              className="h-8 w-full rounded-lg border border-line bg-subtle pl-8 pr-3 text-xs text-ink placeholder:text-ink-muted focus:border-accent focus:outline-none"
-            />
+    <div className="flex h-full min-h-0 flex-1 overflow-hidden bg-canvas">
+      {/* Left Session Rail (Viewport-Locked & Collapsible) */}
+      {railOpen && (
+        <aside className="hidden h-full w-64 shrink-0 flex-col overflow-hidden border-r border-line bg-surface lg:flex">
+          <div className="flex h-14 shrink-0 items-center justify-between border-b border-line px-3.5">
+            <h2 className="text-xs font-semibold tracking-wide text-ink">会话线程</h2>
+            <Button size="sm" variant="primary" onClick={handleNewSession}>
+              <Plus className="h-3.5 w-3.5" />
+              新建
+            </Button>
           </div>
-          <label className="mt-2 flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-muted">
-            <input
-              type="checkbox"
-              checked={showArchived}
-              onChange={(e) => setShowArchived(e.target.checked)}
-              className="rounded border-line"
-            />
-            显示已归档会话
-          </label>
-        </div>
 
-        <div className="flex-1 space-y-1 overflow-y-auto p-2.5">
-          {filteredSessions.length === 0 ? (
-            <div className="py-12 text-center text-xs text-ink-muted">暂无会话</div>
-          ) : (
-            filteredSessions.map((s) => {
-              const active = s.id === activeId
-              return (
-                <div
-                  key={s.id}
-                  onClick={() => handleSelectSession(s.id)}
-                  className={cn(
-                    'group flex cursor-pointer items-start justify-between gap-2 rounded-lg px-3 py-2.5 transition-colors',
-                    active
-                      ? 'bg-subtle text-ink ring-1 ring-line'
-                      : 'text-ink-secondary hover:bg-subtle/60 hover:text-ink',
-                  )}
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5">
-                      {s.pinned && <Pin className="h-3 w-3 shrink-0 text-accent" />}
-                      {s.forkedFromSessionId && (
-                        <GitFork className="h-3 w-3 shrink-0 text-ink-muted" />
-                      )}
-                      {s.running && (
-                        <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent" />
-                      )}
-                      <span className="truncate text-xs font-medium text-ink">
-                        {s.title || '未命名会话'}
-                      </span>
-                    </div>
-                    <p className="mt-0.5 font-mono text-[10px] text-ink-muted">
-                      {s.messageCount} 条 · {formatRelativeTime(s.updatedAt)}
-                    </p>
-                  </div>
-                  <div className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        void handleTogglePin(s)
-                      }}
-                      className="rounded p-1 text-ink-muted hover:bg-wash hover:text-ink"
-                      title={s.pinned ? '取消置顶' : '置顶'}
-                    >
-                      <Pin className="h-3 w-3" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        void handleArchive(s)
-                      }}
-                      className="rounded p-1 text-ink-muted hover:bg-wash hover:text-ink"
-                      title={s.archived ? '取消归档' : '归档'}
-                    >
-                      <Archive className="h-3 w-3" />
-                    </button>
-                  </div>
-                </div>
-              )
-            })
-          )}
-        </div>
-      </aside>
-
-      {/* Main Conversation Canvas */}
-      <div className="flex min-w-0 flex-1 flex-col">
-        {/* Session Header Bar */}
-        <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-line bg-surface px-5 py-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h1 className="truncate text-sm font-semibold text-ink">
-                {detail?.title || '安全智能体对话工作台'}
-              </h1>
-              {detail?.challenge && (
-                <Badge className="border-indigo-200 bg-indigo-50 text-indigo-700 dark:border-indigo-900 dark:bg-indigo-950/60 dark:text-indigo-300">
-                  CTF · {detail.challenge.title}
-                </Badge>
-              )}
+          <div className="shrink-0 border-b border-line px-3 py-2.5">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-ink-muted" />
+              <input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="搜索历史会话..."
+                className="h-8 w-full rounded-lg border border-line bg-subtle pl-8 pr-3 text-xs text-ink placeholder:text-ink-muted focus:border-accent focus:outline-none"
+              />
             </div>
-            {contextInfo && (
-              <div className="mt-0.5 flex items-center gap-2 font-mono text-[11px] text-ink-muted">
-                <span>
-                  上下文 {contextInfo.percent}% ({contextInfo.usedTokens.toLocaleString()} /{' '}
-                  {contextInfo.windowTokens.toLocaleString()})
-                </span>
-                {contextInfo.percent >= 50 && (
-                  <button
-                    type="button"
-                    onClick={handleCompact}
-                    className="text-accent hover:underline"
+            <label className="mt-2 flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-muted hover:text-ink-secondary">
+              <input
+                type="checkbox"
+                checked={showArchived}
+                onChange={(e) => setShowArchived(e.target.checked)}
+                className="rounded border-line"
+              />
+              显示已归档会话
+            </label>
+          </div>
+
+          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
+            {filteredSessions.length === 0 ? (
+              <div className="py-12 text-center text-xs text-ink-muted">暂无会话</div>
+            ) : (
+              filteredSessions.map((s) => {
+                const active = s.id === activeId
+                return (
+                  <div
+                    key={s.id}
+                    onClick={() => handleSelectSession(s.id)}
+                    className={cn(
+                      'group relative flex cursor-pointer items-start justify-between gap-2 rounded-lg px-3 py-2.5 transition-colors',
+                      active
+                        ? 'bg-accent-soft/70 text-ink ring-1 ring-accent/25'
+                        : 'text-ink-secondary hover:bg-subtle hover:text-ink',
+                    )}
                   >
-                    压缩上下文
-                  </button>
+                    {active && (
+                      <span className="absolute bottom-2 left-0 top-2 w-0.5 rounded-r bg-accent" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        {s.pinned && <Pin className="h-3 w-3 shrink-0 text-accent" />}
+                        {s.forkedFromSessionId && (
+                          <GitFork className="h-3 w-3 shrink-0 text-ink-muted" />
+                        )}
+                        {s.running && (
+                          <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent" />
+                        )}
+                        <span className="truncate text-xs font-medium text-ink">
+                          {s.title || '未命名会话'}
+                        </span>
+                      </div>
+                      <p className="mt-1 font-mono text-[10px] text-ink-muted">
+                        {s.messageCount} 条 · {formatRelativeTime(s.updatedAt)}
+                      </p>
+                    </div>
+                    <div className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          void handleTogglePin(s)
+                        }}
+                        className="rounded p-1 text-ink-muted hover:bg-wash hover:text-ink"
+                        title={s.pinned ? '取消置顶' : '置顶'}
+                      >
+                        <Pin className="h-3 w-3" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          void handleArchive(s)
+                        }}
+                        className="rounded p-1 text-ink-muted hover:bg-wash hover:text-ink"
+                        title={s.archived ? '取消归档' : '归档'}
+                      >
+                        <Archive className="h-3 w-3" />
+                      </button>
+                    </div>
+                  </div>
+                )
+              })
+            )}
+          </div>
+        </aside>
+      )}
+
+      {/* Main Conversation Canvas (Pinned Header + Scrollable Stream + Pinned Composer) */}
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        {/* Session Header Bar */}
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2.5 border-b border-line bg-surface/95 px-4 py-2.5 backdrop-blur">
+          <div className="flex min-w-0 flex-1 items-center gap-2.5">
+            <button
+              type="button"
+              onClick={() => setRailOpen((v) => !v)}
+              className="hidden h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-line bg-subtle text-ink-secondary transition-colors hover:border-line-strong hover:text-ink lg:inline-flex"
+              title={railOpen ? '收起会话列表' : '展开会话列表'}
+            >
+              <PanelLeft className="h-4 w-4" />
+            </button>
+
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <h1 className="truncate text-sm font-semibold text-ink">
+                  {detail?.title || '安全智能体对话工作台'}
+                </h1>
+                {detail?.challenge && (
+                  <Badge className="shrink-0 border-indigo-200 bg-indigo-50 text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950/60 dark:text-indigo-300">
+                    CTF · {detail.challenge.title}
+                  </Badge>
                 )}
               </div>
-            )}
+
+              {contextInfo && (
+                <div className="mt-1 flex items-center gap-2 text-[11px] text-ink-secondary">
+                  <div className="flex items-center gap-1.5">
+                    <div className="h-1.5 w-16 overflow-hidden rounded-full bg-wash">
+                      <div
+                        className={cn(
+                          'h-full rounded-full transition-all',
+                          contextInfo.percent >= 80
+                            ? 'bg-red-500'
+                            : contextInfo.percent >= 50
+                              ? 'bg-amber-500'
+                              : 'bg-accent',
+                        )}
+                        style={{ width: `${Math.min(100, Math.max(3, contextInfo.percent))}%` }}
+                      />
+                    </div>
+                    <span className="font-mono text-[10px] tabular-nums text-ink-muted">
+                      上下文 {contextInfo.percent}% · {formatCompactNumber(contextInfo.usedTokens)} /{' '}
+                      {formatCompactNumber(contextInfo.windowTokens)}
+                    </span>
+                  </div>
+                  {contextInfo.percent >= 40 && (
+                    <button
+                      type="button"
+                      onClick={handleCompact}
+                      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-accent hover:bg-accent-soft"
+                    >
+                      <Minimize2 className="h-2.5 w-2.5" />
+                      压缩
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5">
-            {/* Agent Profile Binding Selector */}
             {profiles.length > 0 && (
-              <div className="flex items-center gap-1.5 rounded-lg border border-line bg-subtle px-2 py-1 text-xs">
+              <div className="flex items-center gap-1.5 rounded-lg border border-line bg-subtle px-2.5 py-1 text-xs">
                 <Bot className="h-3.5 w-3.5 text-accent" />
                 <select
                   value={selectedProfileId}
                   onChange={(e) => void handleProfileChange(e.target.value)}
-                  className="max-w-[140px] bg-transparent text-xs text-ink focus:outline-none"
+                  className="max-w-[130px] bg-transparent text-xs text-ink focus:outline-none"
                   title="绑定 Agent 角色画像（控制工具白名单与技能注入）"
                 >
                   <option value="">默认通用角色</option>
@@ -807,14 +1310,13 @@ export function ChatPage() {
               </div>
             )}
 
-            {/* Model Selector */}
             {providers.length > 0 && (
-              <div className="flex items-center gap-1.5 rounded-lg border border-line bg-subtle px-2 py-1 text-xs">
+              <div className="flex items-center gap-1.5 rounded-lg border border-line bg-subtle px-2.5 py-1 text-xs">
                 <Cpu className="h-3.5 w-3.5 text-ink-muted" />
                 <select
                   value={selectedProviderId}
                   onChange={(e) => setSelectedProviderId(e.target.value)}
-                  className="max-w-[150px] bg-transparent text-xs text-ink focus:outline-none"
+                  className="max-w-[140px] bg-transparent text-xs text-ink focus:outline-none"
                 >
                   {providers.map((p) => (
                     <option key={p.id} value={p.id}>
@@ -827,11 +1329,11 @@ export function ChatPage() {
 
             {activeId && (
               <>
-                <Button size="sm" variant="ghost" onClick={() => void handleFork()} title="从当前位置分叉新分支">
+                <Button size="sm" variant="ghost" onClick={() => void handleFork()} title="分叉新分支">
                   <GitFork className="h-3.5 w-3.5" />
                   分叉
                 </Button>
-                <Button size="sm" variant="ghost" onClick={() => void handleOpenTree()} title="查看会话分支树">
+                <Button size="sm" variant="ghost" onClick={() => void handleOpenTree()} title="查看分支树">
                   <GitBranch className="h-3.5 w-3.5" />
                 </Button>
                 <Button
@@ -855,8 +1357,8 @@ export function ChatPage() {
 
         {/* Live Plan / Todo Strip */}
         {todos.length > 0 && (
-          <div className="border-b border-line bg-subtle/70 px-5 py-2">
-            <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-2 text-xs">
+          <div className="shrink-0 border-b border-line bg-subtle/70 px-5 py-2">
+            <div className="mx-auto flex max-w-4xl flex-wrap items-center gap-2 text-xs">
               <span className="inline-flex items-center gap-1 font-medium text-ink">
                 <ListTodo className="h-3.5 w-3.5 text-accent" />
                 执行计划 ({todos.filter((t) => t.status === 'done').length}/{todos.length})
@@ -883,8 +1385,8 @@ export function ChatPage() {
 
         {/* Resumable Interrupted Turn Banner */}
         {resumableTurn && !streaming && !detail?.running && (
-          <div className="border-b border-amber-200 bg-amber-50/80 px-5 py-2.5 dark:border-amber-900/60 dark:bg-amber-950/40">
-            <div className="mx-auto flex max-w-3xl items-center justify-between gap-3 text-xs">
+          <div className="shrink-0 border-b border-amber-200 bg-amber-50/80 px-5 py-2.5 dark:border-amber-900/60 dark:bg-amber-950/40">
+            <div className="mx-auto flex max-w-4xl items-center justify-between gap-3 text-xs">
               <span className="text-amber-900 dark:text-amber-200">
                 检测到上一轮执行在半路中断（已完成 {resumableTurn.roundIndex} 回合、调用{' '}
                 {resumableTurn.toolsUsed} 次工具），可一键续跑接手。
@@ -902,106 +1404,99 @@ export function ChatPage() {
           </div>
         )}
 
-        {/* Message Stream */}
-        <div className="flex-1 overflow-y-auto px-5 py-6">
-          <div className="mx-auto max-w-3xl space-y-5">
+        {/* Scrollable Message Stream */}
+        <div
+          ref={scrollAreaRef}
+          onScroll={handleScrollArea}
+          className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6"
+        >
+          <div className="mx-auto max-w-4xl space-y-5 pb-4">
             {loadingDetail ? (
-              <div className="flex items-center justify-center py-20 text-xs text-ink-muted">
+              <div className="flex items-center justify-center py-24 text-xs text-ink-muted">
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 加载会话记录…
               </div>
-            ) : !detail || detail.messages.length === 0 ? (
-              <EmptyState
-                icon={<MessagesSquare className="h-5 w-5" />}
-                title="向 Suvex 2 智能体下达安全任务"
-                description="上方可直接绑定自定义 Agent 角色画像约束工具边界，支持分支 Fork、实时计划条、附件分析与攻击链可视化。"
-                action={
-                  <div className="flex flex-wrap justify-center gap-2">
-                    {[
-                      '帮我检查当前平台的沙箱与模型配置状态',
-                      '总结最近一次扫描中已确证的高危漏洞',
-                      '分析一份 Web 登录接口可能存在的认证绕过面',
-                    ].map((prompt) => (
-                      <button
-                        key={prompt}
-                        type="button"
-                        onClick={() => setInput(prompt)}
-                        className="rounded-lg border border-line bg-surface px-3 py-1.5 text-xs text-ink-secondary shadow-editorial hover:border-line-strong hover:text-ink"
-                      >
-                        {prompt}
-                      </button>
-                    ))}
-                  </div>
-                }
-              />
-            ) : (
-              detail.messages.map((msg) => {
-                if (msg.role === 'user') {
-                  return (
-                    <div key={msg.id} className="group flex items-start justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void handleFork(msg.seq)}
-                        className="mt-2 hidden rounded p-1 text-ink-muted hover:bg-wash hover:text-ink group-hover:block"
-                        title="从此消息分叉新分支"
-                      >
-                        <GitFork className="h-3.5 w-3.5" />
-                      </button>
-                      <div className="max-w-[82%] rounded-2xl rounded-tr-sm bg-ink px-4 py-2.5 text-sm leading-relaxed text-canvas shadow-sm">
-                        <p className="whitespace-pre-wrap">{msg.content}</p>
-                      </div>
+            ) : !detail || displayBlocks.length === 0 ? (
+              <div className="py-10">
+                <EmptyState
+                  icon={<MessagesSquare className="h-5 w-5" />}
+                  title="向 Suvex 2 智能体下达安全任务"
+                  description="支持绑定自定义 Agent 角色画像与远程 HTTP MCP（如 ctf2-suvex），具备执行轨迹折叠、代码一键复制、分支 Fork 与攻击链可视化。"
+                  action={
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {[
+                        '帮我检查当前平台的沙箱、模型与已挂载 MCP 工具状态',
+                        '列出 CTF2 练习场里可做的 Web/Pwn 题目并开始解题',
+                        '总结最近一次扫描中已确证的高危漏洞与修复建议',
+                        '分析一份 Web 登录接口可能存在的认证绕过攻击面',
+                      ].map((prompt) => (
+                        <button
+                          key={prompt}
+                          type="button"
+                          onClick={() => setInput(prompt)}
+                          className="rounded-xl border border-line bg-surface px-3.5 py-2.5 text-left text-xs text-ink-secondary shadow-editorial transition-colors hover:border-accent/50 hover:text-ink"
+                        >
+                          {prompt}
+                        </button>
+                      ))}
                     </div>
+                  }
+                />
+              </div>
+            ) : (
+              displayBlocks.map((block) => {
+                if (block.kind === 'user') {
+                  return (
+                    <UserMessageBlock
+                      key={block.msg.id}
+                      msg={block.msg}
+                      onFork={(seq) => void handleFork(seq)}
+                    />
                   )
                 }
-
-                if (msg.role === 'tool' || msg.toolName) {
-                  return <ToolCallCard key={msg.id} msg={msg} onApprove={handleApprove} />
+                if (block.kind === 'trace') {
+                  return (
+                    <ExecutionTraceGroup
+                      key={block.id}
+                      items={block.items}
+                      onApprove={handleApprove}
+                    />
+                  )
                 }
-
                 return (
-                  <div
-                    key={msg.id}
-                    className="group rounded-editorial border border-line bg-surface p-5 shadow-editorial"
-                  >
-                    <div className="mb-2 flex items-center justify-between text-[11px] text-ink-muted">
-                      <span className="font-mono font-medium text-ink-secondary">Suvex Agent</span>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => void handleFork(msg.seq)}
-                          className="hidden items-center gap-1 rounded px-1.5 py-0.5 text-[10px] hover:bg-wash hover:text-ink group-hover:inline-flex"
-                        >
-                          <GitFork className="h-3 w-3" />
-                          在此分叉
-                        </button>
-                        <span className="font-mono">{formatRelativeTime(msg.createdAt)}</span>
-                      </div>
-                    </div>
-                    {msg.reasoning && <ReasoningAccordion text={msg.reasoning} />}
-                    {msg.content && <MarkdownView content={msg.content} />}
-                  </div>
+                  <AssistantMessageBlock
+                    key={block.msg.id}
+                    msg={block.msg}
+                    onFork={(seq) => void handleFork(seq)}
+                  />
                 )
               })
             )}
 
             {/* Live Streaming / Reattached Turn Card */}
             {(streaming || streamPhase) && (
-              <div className="rounded-editorial border border-accent/30 bg-surface p-5 shadow-editorial">
-                <div className="mb-3 flex items-center justify-between text-xs">
+              <div className="rounded-2xl border border-accent/35 bg-surface px-5 py-4 shadow-editorial">
+                <div className="mb-3 flex items-center justify-between gap-2 text-xs">
                   <span className="inline-flex items-center gap-2 font-medium text-accent">
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
                     {streamPhase || '正在处理…'}
                   </span>
                   <Button size="sm" variant="danger" onClick={handleStop}>
                     <Square className="h-3 w-3" />
-                    停止
+                    停止执行
                   </Button>
                 </div>
                 {streamReasoning && <ReasoningAccordion text={streamReasoning} streaming />}
                 {liveToolOut && (
-                  <pre className="mb-3 max-h-48 overflow-auto rounded-lg border border-line bg-subtle p-3 font-mono text-[11px] text-ink-secondary">
-                    {liveToolOut}
-                  </pre>
+                  <div className="mb-3 overflow-hidden rounded-xl border border-line bg-canvas">
+                    <div className="flex items-center gap-1.5 border-b border-line-subtle bg-subtle px-3 py-1 font-mono text-[10px] text-ink-muted">
+                      <Terminal className="h-3 w-3 text-accent" />
+                      实时终端输出
+                    </div>
+                    <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all p-3 font-mono text-[11px] leading-relaxed text-ink-secondary">
+                      {liveToolOut}
+                    </pre>
+                  </div>
                 )}
                 {streamText && <MarkdownView content={streamText} />}
               </div>
@@ -1011,17 +1506,29 @@ export function ChatPage() {
           </div>
         </div>
 
-        {/* Composer Dock */}
-        <div className="border-t border-line bg-surface px-5 py-3.5">
-          <div className="mx-auto max-w-3xl">
+        {/* Scroll-to-Bottom Floating Pill */}
+        {showScrollBottom && (
+          <button
+            type="button"
+            onClick={() => scrollToBottom(true)}
+            className="absolute bottom-32 right-6 z-20 inline-flex items-center gap-1.5 rounded-full border border-line-strong bg-surface/95 px-3 py-1.5 text-xs font-medium text-ink shadow-elevated backdrop-blur transition-colors hover:border-accent hover:text-accent"
+          >
+            <ArrowDown className="h-3.5 w-3.5" />
+            回到底部
+          </button>
+        )}
+
+        {/* Modern Pinned Command Composer */}
+        <div className="shrink-0 border-t border-line bg-surface/90 px-4 py-3 backdrop-blur sm:px-6">
+          <div className="mx-auto max-w-4xl">
             {attachments.length > 0 && (
               <div className="mb-2 flex flex-wrap gap-1.5">
                 {attachments.map((att) => (
                   <span
                     key={att.id}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-line bg-subtle px-2 py-1 text-xs text-ink-secondary"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-subtle px-2.5 py-1 text-xs text-ink-secondary"
                   >
-                    <Paperclip className="h-3 w-3" />
+                    <Paperclip className="h-3 w-3 text-accent" />
                     <span className="max-w-[180px] truncate">{att.name}</span>
                     <span className="font-mono text-[10px] text-ink-muted">
                       {formatBytes(att.sizeBytes)}
@@ -1038,7 +1545,7 @@ export function ChatPage() {
               </div>
             )}
 
-            <div className="flex items-end gap-2 rounded-xl border border-line bg-canvas p-2 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15">
+            <div className="rounded-2xl border border-line bg-canvas p-2.5 shadow-editorial transition-all focus-within:border-accent/70 focus-within:ring-2 focus-within:ring-accent/15">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -1046,22 +1553,10 @@ export function ChatPage() {
                 className="hidden"
                 onChange={(e) => void handleUploadFile(e.target.files)}
               />
-              <button
-                type="button"
-                disabled={uploading}
-                onClick={() => fileInputRef.current?.click()}
-                className="rounded-lg p-2 text-ink-muted transition-colors hover:bg-wash hover:text-ink"
-                title="上传附件到工作区"
-              >
-                {uploading ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Paperclip className="h-4 w-4" />
-                )}
-              </button>
 
               <textarea
-                rows={1}
+                ref={textareaRef}
+                rows={2}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
@@ -1072,22 +1567,65 @@ export function ChatPage() {
                 }}
                 placeholder={
                   streaming || detail?.running
-                    ? '运行中可输入插话，智能体会在下一轮读取…'
-                    : '输入安全指令、目标或问题（Enter 发送，Shift+Enter 换行）'
+                    ? '智能体执行中，可直接输入补充线索或指令（将在下一轮读取）…'
+                    : '输入安全指令、粘贴题目描述、或下达工具/MCP 编排任务…'
                 }
-                className="max-h-36 flex-1 resize-none bg-transparent py-1.5 text-sm text-ink placeholder:text-ink-muted focus:outline-none"
+                className="w-full resize-none bg-transparent px-1.5 py-1 text-sm leading-relaxed text-ink placeholder:text-ink-muted focus:outline-none"
               />
 
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => void handleSend()}
-                disabled={!input.trim()}
-                className="h-8 px-3"
-              >
-                <Send className="h-3.5 w-3.5" />
-                {streaming || detail?.running ? '插话' : '发送'}
-              </Button>
+              <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 border-t border-line-subtle pt-2">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={uploading}
+                    onClick={() => fileInputRef.current?.click()}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 py-1 text-[11px] font-medium text-ink-secondary transition-colors hover:border-line-strong hover:text-ink"
+                    title="上传附件到工作区"
+                  >
+                    {uploading ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Paperclip className="h-3.5 w-3.5" />
+                    )}
+                    <span>上传附件</span>
+                  </button>
+
+                  <span className="hidden items-center gap-1 rounded-md bg-subtle px-2 py-1 font-mono text-[10px] text-ink-muted sm:inline-flex">
+                    <Cpu className="h-3 w-3" />
+                    {activeProviderLabel}
+                  </span>
+
+                  {activeProfileName && (
+                    <span className="hidden items-center gap-1 rounded-md bg-accent-soft px-2 py-1 text-[10px] font-medium text-accent sm:inline-flex">
+                      <Bot className="h-3 w-3" />
+                      {activeProfileName}
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2.5">
+                  <span className="hidden text-[11px] text-ink-muted sm:inline">
+                    Enter 发送 · Shift+Enter 换行
+                  </span>
+                  {(streaming || detail?.running) && !input.trim() ? (
+                    <Button variant="danger" size="sm" onClick={handleStop} className="h-8 px-3">
+                      <Square className="h-3 w-3" />
+                      停止
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={() => void handleSend()}
+                      disabled={!input.trim()}
+                      className="h-8 px-3.5"
+                    >
+                      <Send className="h-3.5 w-3.5" />
+                      {streaming || detail?.running ? '插话' : '发送'}
+                    </Button>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         </div>
