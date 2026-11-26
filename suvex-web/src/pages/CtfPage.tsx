@@ -13,7 +13,9 @@ import {
   MessagesSquare,
   Play,
   Plug,
+  PowerOff,
   RefreshCw,
+  SlidersHorizontal,
   Sparkles,
   Square,
   Trash2,
@@ -28,10 +30,13 @@ import type {
   KernelCompetitionOut,
   KernelQueueOut,
   KernelRemoteCompetitionOut,
+  KernelSettingsOut,
   KernelUsageSummary,
   KernelWriteupOut,
   McpServerOut,
+  ProviderOut,
   RaceStatusOut,
+  SubmitMode,
 } from '@/types/api'
 import {
   Badge,
@@ -96,15 +101,25 @@ export function CtfPage() {
 
   const [writeup, setWriteup] = useState<KernelWriteupOut | null>(null)
 
+  // Kernel Settings Modal & Environment Release
+  const [kernelSettings, setKernelSettings] = useState<KernelSettingsOut | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsDraft, setSettingsDraft] = useState<KernelSettingsOut | null>(null)
+  const [savingSettings, setSavingSettings] = useState(false)
+  const [providers, setProviders] = useState<ProviderOut[]>([])
+  const [releasingEnvId, setReleasingEnvId] = useState<string | null>(null)
+
   const loadAll = useCallback(async () => {
     try {
-      const [accs, comps, q, usg, race, mcp] = await Promise.all([
+      const [accs, comps, q, usg, race, mcp, kCfg, provs] = await Promise.all([
         api.getKernelAccounts().catch(() => []),
         api.getKernelCompetitions().catch(() => []),
         api.getKernelQueue().catch(() => null),
         api.getKernelUsage(selectedCompId || undefined).catch(() => null),
         api.getRaceStatus().catch(() => null),
         api.getMcpServers().catch(() => ({ servers: [] })),
+        api.getKernelSettings().catch(() => null),
+        api.listProviders().catch(() => []),
       ])
       const sortedComps = [...comps].sort((a, b) => b.challengeCount - a.challengeCount)
       setAccounts(accs)
@@ -113,6 +128,8 @@ export function CtfPage() {
       setUsage(usg)
       setRaceStatus(race)
       setMcpServers(mcp.servers)
+      if (kCfg) setKernelSettings(kCfg)
+      setProviders(provs)
 
       const chals = await api.getKernelChallenges({
         competitionId: selectedCompId || undefined,
@@ -439,6 +456,60 @@ export function CtfPage() {
     }
   }
 
+  const handleOpenSettings = async () => {
+    try {
+      const cfg = kernelSettings ?? (await api.getKernelSettings())
+      setKernelSettings(cfg)
+      setSettingsDraft({ ...cfg })
+      setSettingsOpen(true)
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '加载 CTF 解题策略失败', 'error')
+    }
+  }
+
+  const handleSaveKernelSettings = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!settingsDraft) return
+    setSavingSettings(true)
+    try {
+      const { updatedAt: _omit, ...payload } = settingsDraft
+      const saved = await api.updateKernelSettings({
+        ...payload,
+        maxWrongSubmissions: Math.max(0, Math.min(10, Number(payload.maxWrongSubmissions) || 0)),
+        maxConcurrentSolves: Math.max(1, Math.min(16, Number(payload.maxConcurrentSolves) || 1)),
+        solvePollSeconds: Math.max(0.5, Math.min(30, Number(payload.solvePollSeconds) || 2)),
+        autoSyncSeconds: Math.max(0, Math.min(3600, Number(payload.autoSyncSeconds) || 0)),
+        maxTurns: Math.max(5, Math.min(500, Number(payload.maxTurns) || 40)),
+        wallClockSeconds: payload.wallClockSeconds ? Number(payload.wallClockSeconds) : null,
+        fallbackProviderId: payload.fallbackProviderId || null,
+      })
+      setKernelSettings(saved)
+      setSettingsOpen(false)
+      push(
+        `CTF 解题策略已生效（提交模式：${saved.submitMode === 'auto' ? '自动提交' : '安全人工确认'}）`,
+        'success',
+      )
+      await loadAll()
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '保存 CTF 策略失败', 'error')
+    } finally {
+      setSavingSettings(false)
+    }
+  }
+
+  const handleReleaseEnv = async (chal: KernelChallengeOut) => {
+    setReleasingEnvId(chal.id)
+    try {
+      await api.releaseChallengeEnvironment(chal.id)
+      push(`已释放「${chal.title}」的靶机实例`, 'default')
+      await loadAll()
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '释放靶机失败', 'error')
+    } finally {
+      setReleasingEnvId(null)
+    }
+  }
+
   return (
     <div>
       {/* CTF Shader Hero Banner */}
@@ -465,6 +536,27 @@ export function CtfPage() {
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void handleOpenSettings()}
+                className="bg-surface/80 backdrop-blur"
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5" />
+                解题策略
+                {kernelSettings && (
+                  <span
+                    className={cn(
+                      'ml-1 rounded px-1.5 py-0.5 font-mono text-[10px]',
+                      kernelSettings.submitMode === 'auto'
+                        ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                        : 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
+                    )}
+                  >
+                    {kernelSettings.submitMode === 'auto' ? '自动交Flag' : '安全确认'}
+                  </span>
+                )}
+              </Button>
               <Button variant="secondary" size="sm" onClick={() => void handlePrioritizeByScore()} className="bg-surface/80 backdrop-blur">
                 <ArrowDownWideNarrow className="h-3.5 w-3.5" />
                 按高分排优
@@ -844,6 +936,15 @@ export function CtfPage() {
                     </p>
                   )}
 
+                  {chal.environment?.accessUrl && chal.environment.status !== 'stopped' && (
+                    <div className="mt-2.5 flex items-center justify-between gap-2 rounded-lg border border-sky-200/80 bg-sky-50/70 px-2.5 py-1.5 text-[11px] text-sky-900 dark:border-sky-900/70 dark:bg-sky-950/40 dark:text-sky-200">
+                      <span className="truncate font-mono" title={chal.environment.accessUrl}>
+                        靶机：{chal.environment.accessUrl}
+                      </span>
+                      <Badge className="shrink-0 text-[10px]">{chal.environment.status}</Badge>
+                    </div>
+                  )}
+
                   {(chal.confirmedFlag || chal.candidateFlag) && (
                     <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50/70 px-2.5 py-1.5 font-mono text-[11px] text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-200">
                       <span className="block truncate">
@@ -905,6 +1006,19 @@ export function CtfPage() {
                     <FileText className="h-3.5 w-3.5" />
                     题解
                   </Button>
+
+                  {chal.environment && chal.environment.status !== 'stopped' && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      loading={releasingEnvId === chal.id}
+                      onClick={() => void handleReleaseEnv(chal)}
+                      title="手动释放远端靶机实例，归还平台配额"
+                    >
+                      <PowerOff className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+                      释放靶机
+                    </Button>
+                  )}
                 </div>
               </SpotlightCard>
             )
@@ -1134,6 +1248,228 @@ export function CtfPage() {
         maxWidth="max-w-3xl"
       >
         {writeup && <MarkdownView content={writeup.markdown} />}
+      </Modal>
+
+      {/* Kernel Strategy Settings Modal */}
+      <Modal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        title="CTF 解题与提交策略"
+        subtitle="修改后立即生效并写入审计日志（含运行中任务的下一个决策点）"
+        maxWidth="max-w-xl"
+      >
+        {settingsDraft && (
+          <form onSubmit={handleSaveKernelSettings} className="space-y-4 text-xs">
+            <div className="rounded-lg border border-line bg-subtle/60 p-3">
+              <label className="mb-1.5 block font-medium text-ink">Flag 提交模式</label>
+              <Select
+                value={settingsDraft.submitMode}
+                onChange={(v) =>
+                  setSettingsDraft({ ...settingsDraft, submitMode: v as SubmitMode })
+                }
+                options={[
+                  { value: 'safe', label: 'safe — 安全人工确认（推荐，仅保存候选 Flag）' },
+                  { value: 'auto', label: 'auto — 自动向平台提交（无人值守，会消耗错误额度）' },
+                ]}
+              />
+              {settingsDraft.submitMode === 'auto' && (
+                <p className="mt-1.5 text-[11px] text-amber-700 dark:text-amber-300">
+                  注意：自动提交会在捕获候选 Flag 后直接向平台提交，可能消耗不可再生的错误提交次数。
+                </p>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <div>
+                <label className="mb-1 block text-[11px] text-ink-muted">并发解题上限 (1-16)</label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={16}
+                  value={settingsDraft.maxConcurrentSolves}
+                  onChange={(e) =>
+                    setSettingsDraft({
+                      ...settingsDraft,
+                      maxConcurrentSolves: Number(e.target.value),
+                    })
+                  }
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] text-ink-muted">单题最大回合 (5-500)</label>
+                <Input
+                  type="number"
+                  min={5}
+                  max={500}
+                  value={settingsDraft.maxTurns}
+                  onChange={(e) =>
+                    setSettingsDraft({ ...settingsDraft, maxTurns: Number(e.target.value) })
+                  }
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] text-ink-muted">错误提交熔断 (0-10)</label>
+                <Input
+                  type="number"
+                  min={0}
+                  max={10}
+                  value={settingsDraft.maxWrongSubmissions}
+                  onChange={(e) =>
+                    setSettingsDraft({
+                      ...settingsDraft,
+                      maxWrongSubmissions: Number(e.target.value),
+                    })
+                  }
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] text-ink-muted">单题墙钟上限 (秒，空=自动)</label>
+                <Input
+                  type="number"
+                  min={120}
+                  max={86400}
+                  value={settingsDraft.wallClockSeconds ?? ''}
+                  placeholder="自动 (回合×45s)"
+                  onChange={(e) =>
+                    setSettingsDraft({
+                      ...settingsDraft,
+                      wallClockSeconds: e.target.value ? Number(e.target.value) : null,
+                    })
+                  }
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] text-ink-muted">自动同步间隔 (秒，0=关闭)</label>
+                <Input
+                  type="number"
+                  min={0}
+                  max={3600}
+                  value={settingsDraft.autoSyncSeconds}
+                  onChange={(e) =>
+                    setSettingsDraft({
+                      ...settingsDraft,
+                      autoSyncSeconds: Number(e.target.value),
+                    })
+                  }
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] text-ink-muted">调度轮询间隔 (0.5-30s)</label>
+                <Input
+                  type="number"
+                  step="0.5"
+                  min={0.5}
+                  max={30}
+                  value={settingsDraft.solvePollSeconds}
+                  onChange={(e) =>
+                    setSettingsDraft({
+                      ...settingsDraft,
+                      solvePollSeconds: Number(e.target.value),
+                    })
+                  }
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-[11px] text-ink-muted">默认沙箱档案</label>
+                <Select
+                  value={settingsDraft.defaultSandboxProfile}
+                  onChange={(v) =>
+                    setSettingsDraft({ ...settingsDraft, defaultSandboxProfile: v })
+                  }
+                  options={[
+                    { value: 'suvex-sandbox', label: 'suvex-sandbox（Web/通用）' },
+                    { value: 'suvex-sandbox-re', label: 'suvex-sandbox-re（逆向/Pwn）' },
+                    { value: 'suvex-sandbox-ir', label: 'suvex-sandbox-ir（应急取证）' },
+                  ]}
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] text-ink-muted">主模型异常时兜底换模</label>
+                <Select
+                  value={settingsDraft.fallbackProviderId || ''}
+                  onChange={(v) =>
+                    setSettingsDraft({ ...settingsDraft, fallbackProviderId: v || null })
+                  }
+                  options={[
+                    { value: '', label: '不启用自动换模' },
+                    ...providers.map((p) => ({
+                      value: p.id,
+                      label: `${p.label} (${p.model})`,
+                    })),
+                  ]}
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2 rounded-lg border border-line bg-subtle/50 p-3">
+              <label className="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={settingsDraft.enableMultiAgent}
+                  onChange={(e) =>
+                    setSettingsDraft({ ...settingsDraft, enableMultiAgent: e.target.checked })
+                  }
+                />
+                <span>启用多智能体协同编排（root + 并行子智能体）</span>
+              </label>
+              <label className="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={settingsDraft.autoPriorityNew}
+                  onChange={(e) =>
+                    setSettingsDraft({ ...settingsDraft, autoPriorityNew: e.target.checked })
+                  }
+                />
+                <span>同步到新题时按分值自动提升队列优先级</span>
+              </label>
+              <label className="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={settingsDraft.autoStartNew}
+                  onChange={(e) =>
+                    setSettingsDraft({ ...settingsDraft, autoStartNew: e.target.checked })
+                  }
+                />
+                <span>同步到新题后自动投入解题队列（抢首杀）</span>
+              </label>
+              <label className="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={settingsDraft.enableAgentsecScenarios}
+                  onChange={(e) =>
+                    setSettingsDraft({
+                      ...settingsDraft,
+                      enableAgentsecScenarios: e.target.checked,
+                    })
+                  }
+                />
+                <span>启用智能体安全评测场景包（agentsec-*）</span>
+              </label>
+              <label className="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={settingsDraft.enableIrScenarios}
+                  onChange={(e) =>
+                    setSettingsDraft({ ...settingsDraft, enableIrScenarios: e.target.checked })
+                  }
+                />
+                <span>启用应急响应只读复盘场景包（ir-*）</span>
+              </label>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-1">
+              <Button type="button" variant="secondary" onClick={() => setSettingsOpen(false)}>
+                取消
+              </Button>
+              <Button type="submit" variant="primary" loading={savingSettings}>
+                保存策略
+              </Button>
+            </div>
+          </form>
+        )}
       </Modal>
     </div>
   )

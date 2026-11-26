@@ -32,6 +32,7 @@ import {
   Square,
   Terminal,
   Trash2,
+  Upload,
   User,
   Workflow,
   Wrench,
@@ -836,6 +837,8 @@ export function ChatPage() {
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
   const [workspaceTab, setWorkspaceTab] = useState<'files' | 'sandbox' | 'chain'>('files')
   const [sessionFiles, setSessionFiles] = useState<ChatFileOut[]>([])
+  const [uploadingWorkspaceFile, setUploadingWorkspaceFile] = useState(false)
+  const workspaceFileInputRef = useRef<HTMLInputElement | null>(null)
 
   const [input, setInput] = useState('')
   const [slashIndex, setSlashIndex] = useState(0)
@@ -2645,55 +2648,99 @@ export function ChatPage() {
             }}
           />
         ) : workspaceTab === 'files' ? (
-          sessionFiles.length === 0 ? (
-            <EmptyState
-              icon={<FolderOpen className="h-4 w-4" />}
-              title="工作区暂无文件"
-              description="智能体写入 `/work/persist` 的脚本、取证包和报告都会实时列在这里。"
-            />
-          ) : (
-            <div className="space-y-2">
-              {sessionFiles.map((f) => (
-                <div
-                  key={f.path}
-                  className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3.5 py-2.5 text-xs"
+          <div className="space-y-3">
+            {activeId && (
+              <div className="flex items-center justify-between gap-2 rounded-lg border border-dashed border-line bg-subtle/40 px-3.5 py-2.5 text-xs">
+                <span className="text-ink-secondary">
+                  直接上传文件到 <code className="font-mono text-[11px] text-ink">/work/persist/uploads/</code>
+                </span>
+                <input
+                  ref={workspaceFileInputRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={async (e) => {
+                    const files = Array.from(e.target.files || [])
+                    e.target.value = ''
+                    const sid = activeId
+                    if (!sid || files.length === 0) return
+                    setUploadingWorkspaceFile(true)
+                    try {
+                      for (const file of files) {
+                        await api.uploadSessionFile(sid, file)
+                      }
+                      const fls = await api.listSessionFiles(sid)
+                      if (activeIdRef.current === sid) setSessionFiles(fls)
+                      push(`已上传 ${files.length} 个文件到工作区`, 'success')
+                    } catch (err) {
+                      push(err instanceof ApiClientError ? err.message : '上传工作区文件失败', 'error')
+                    } finally {
+                      setUploadingWorkspaceFile(false)
+                    }
+                  }}
+                />
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  loading={uploadingWorkspaceFile}
+                  onClick={() => workspaceFileInputRef.current?.click()}
                 >
-                  <div className="min-w-0">
-                    <p className="truncate font-mono font-medium text-ink">{f.name}</p>
-                    <p className="font-mono text-[10px] text-ink-muted">
-                      {f.path} · {formatBytes(f.sizeBytes)}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    {activeId && (
-                      <>
-                        <a
-                          href={api.getChatFileDownloadUrl(activeId, f.path)}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          <Button size="sm" variant="ghost">
-                            <Download className="h-3.5 w-3.5" />
+                  <Upload className="h-3.5 w-3.5" />
+                  上传文件
+                </Button>
+              </div>
+            )}
+
+            {sessionFiles.length === 0 ? (
+              <EmptyState
+                icon={<FolderOpen className="h-4 w-4" />}
+                title="工作区暂无文件"
+                description="智能体写入 `/work/persist` 的脚本、取证包和报告，或手动上传的文件都会实时列在这里。"
+              />
+            ) : (
+              <div className="space-y-2">
+                {sessionFiles.map((f) => (
+                  <div
+                    key={f.path}
+                    className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3.5 py-2.5 text-xs"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate font-mono font-medium text-ink">{f.name}</p>
+                      <p className="font-mono text-[10px] text-ink-muted">
+                        {f.path} · {formatBytes(f.sizeBytes)}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      {activeId && (
+                        <>
+                          <a
+                            href={api.getChatFileDownloadUrl(activeId, f.path)}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            <Button size="sm" variant="ghost">
+                              <Download className="h-3.5 w-3.5" />
+                            </Button>
+                          </a>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={async () => {
+                              await api.deleteChatFile(activeId, f.path)
+                              setSessionFiles((prev) => prev.filter((x) => x.path !== f.path))
+                              push(`已删除 ${f.name}`, 'default')
+                            }}
+                          >
+                            <Trash2 className="h-3.5 w-3.5 text-ink-muted hover:text-red-600" />
                           </Button>
-                        </a>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={async () => {
-                            await api.deleteChatFile(activeId, f.path)
-                            setSessionFiles((prev) => prev.filter((x) => x.path !== f.path))
-                            push(`已删除 ${f.name}`, 'default')
-                          }}
-                        >
-                          <Trash2 className="h-3.5 w-3.5 text-ink-muted hover:text-red-600" />
-                        </Button>
-                      </>
-                    )}
+                        </>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          )
+                ))}
+              </div>
+            )}
+          </div>
         ) : attackChainSteps.length === 0 ? (
           <EmptyState
             icon={<Workflow className="h-4 w-4" />}

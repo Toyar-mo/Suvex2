@@ -66,6 +66,10 @@ export function MissionsPage() {
   const [newIntentGoalId, setNewIntentGoalId] = useState('')
   const [proveGoalId, setProveGoalId] = useState<string | null>(null)
   const [proveEvidence, setProveEvidence] = useState('')
+  const [finishIntentId, setFinishIntentId] = useState<string | null>(null)
+  const [finishIntentStatus, setFinishIntentStatus] = useState<'done' | 'failed' | 'cancelled'>('done')
+  const [finishIntentResult, setFinishIntentResult] = useState('')
+  const [finishingIntent, setFinishingIntent] = useState(false)
 
   // Report Modal
   const [reportData, setReportData] = useState<Record<string, unknown> | null>(null)
@@ -219,6 +223,28 @@ export function MissionsPage() {
       await loadGraph(selectedId)
     } catch (err) {
       push(err instanceof ApiClientError ? err.message : '验收失败', 'error')
+    }
+  }
+
+  const handleFinishIntent = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!selectedId || !finishIntentId) return
+    setFinishingIntent(true)
+    try {
+      await api.finishMissionIntent(
+        selectedId,
+        finishIntentId,
+        finishIntentStatus,
+        finishIntentResult.trim() || '人工结项',
+      )
+      push('行动意图状态已更新', 'success')
+      setFinishIntentId(null)
+      setFinishIntentResult('')
+      await loadGraph(selectedId)
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '更新行动意图失败', 'error')
+    } finally {
+      setFinishingIntent(false)
     }
   }
 
@@ -445,15 +471,32 @@ export function MissionsPage() {
                             {it.result}
                           </p>
                         )}
-                        {it.workerSessionId && (
-                          <Link
-                            to={`/chat?session=${encodeURIComponent(it.workerSessionId)}`}
-                            className="mt-2 inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:underline"
-                          >
-                            <MessagesSquare className="h-3 w-3" />
-                            查看 Worker 对话现场
-                          </Link>
-                        )}
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          {it.workerSessionId && (
+                            <Link
+                              to={`/chat?session=${encodeURIComponent(it.workerSessionId)}`}
+                              className="inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:underline"
+                            >
+                              <MessagesSquare className="h-3 w-3" />
+                              查看 Worker 对话现场
+                            </Link>
+                          )}
+                          {it.status !== 'done' && it.status !== 'failed' && it.status !== 'cancelled' && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 px-2 text-[11px]"
+                              onClick={() => {
+                                setFinishIntentId(it.id)
+                                setFinishIntentStatus('done')
+                                setFinishIntentResult('')
+                              }}
+                            >
+                              <CheckCircle2 className="h-3 w-3" />
+                              手动结项
+                            </Button>
+                          )}
+                        </div>
                       </div>
                     ))}
                     <form onSubmit={handleAddIntent} className="space-y-1.5 pt-2">
@@ -627,6 +670,45 @@ export function MissionsPage() {
             </Button>
             <Button type="submit" variant="primary">
               确认验收
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Finish Intent Modal */}
+      <Modal
+        open={Boolean(finishIntentId)}
+        onClose={() => setFinishIntentId(null)}
+        title="手动结束行动意图"
+      >
+        <form onSubmit={handleFinishIntent} className="space-y-4">
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-ink-secondary">结项状态</label>
+            <Select
+              value={finishIntentStatus}
+              onChange={(v) => setFinishIntentStatus(v as 'done' | 'failed' | 'cancelled')}
+              options={[
+                { value: 'done', label: '已完成 (done)' },
+                { value: 'failed', label: '执行失败 (failed)' },
+                { value: 'cancelled', label: '已取消 (cancelled)' },
+              ]}
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-ink-secondary">结项结论说明</label>
+            <Textarea
+              rows={3}
+              value={finishIntentResult}
+              onChange={(e) => setFinishIntentResult(e.target.value)}
+              placeholder="简述该行动意图的结论、产出或中止原因…"
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={() => setFinishIntentId(null)}>
+              取消
+            </Button>
+            <Button type="submit" variant="primary" loading={finishingIntent}>
+              确认更新
             </Button>
           </div>
         </form>

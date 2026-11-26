@@ -54,6 +54,9 @@ const AgentsPage = lazy(() =>
 const ApprovalsPage = lazy(() =>
   import('@/pages/ApprovalsPage').then((m) => ({ default: m.ApprovalsPage })),
 )
+const AuditPage = lazy(() =>
+  import('@/pages/AuditPage').then((m) => ({ default: m.AuditPage })),
+)
 const MissionsPage = lazy(() =>
   import('@/pages/MissionsPage').then((m) => ({ default: m.MissionsPage })),
 )
@@ -124,6 +127,7 @@ export function AppRoutes() {
           <Route path="/skills" element={<SkillsPage />} />
           <Route path="/agents" element={<AgentsPage />} />
           <Route path="/approvals" element={<ApprovalsPage />} />
+          <Route path="/audit" element={<AuditPage />} />
           <Route path="/models" element={<ModelsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>

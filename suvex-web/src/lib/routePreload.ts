@@ -24,6 +24,7 @@ export const ROUTE_LOADERS: Record<string, LoaderFn> = {
   '/skills': () => import('@/pages/SkillsPage'),
   '/agents': () => import('@/pages/AgentsPage'),
   '/approvals': () => import('@/pages/ApprovalsPage'),
+  '/audit': () => import('@/pages/AuditPage'),
   '/models': () => import('@/pages/ModelsPage'),
   '/settings': () => import('@/pages/SettingsPage'),
 }

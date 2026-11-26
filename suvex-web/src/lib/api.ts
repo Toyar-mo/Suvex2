@@ -5,6 +5,7 @@ import type {
   ApiErrorBody,
   ApiTokenOut,
   AssetListOut,
+  AuditPageOut,
   AuthState,
   ChatApprovalOut,
   ChatAttachmentOut,
@@ -46,12 +47,15 @@ import type {
   KernelQueueOut,
   KernelRecipesOut,
   KernelRemoteCompetitionOut,
+  KernelSettingsIn,
+  KernelSettingsOut,
   KernelSkillsOut,
   KernelToolProbeOut,
   KernelToolsOut,
   KernelUsageSummary,
   KernelWorkOrderOut,
   KernelWriteupOut,
+  LlmRetryPolicyOut,
   McpMountCtf2Out,
   McpServerIn,
   McpServerOut,
@@ -60,6 +64,7 @@ import type {
   MissionGraphOut,
   MissionIntentOut,
   MissionTaskOut,
+  ModelRoutesOut,
   NetworkRestrictionsOut,
   NoticeRuleOut,
   NotifyChannelOut,
@@ -607,6 +612,16 @@ export const api = {
     request<KernelWriteupOut>(`/kernel/challenges/${encodeURIComponent(challengeId)}/writeup`),
   getKernelUsage: (competitionId?: string) =>
     request<KernelUsageSummary>(`/kernel/usage${qs({ competitionId })}`),
+  getKernelSettings: () => request<KernelSettingsOut>('/kernel/settings'),
+  updateKernelSettings: (payload: KernelSettingsIn) =>
+    request<KernelSettingsOut>('/kernel/settings', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  releaseChallengeEnvironment: (challengeId: string) =>
+    request<void>(`/kernel/challenges/${encodeURIComponent(challengeId)}/environment`, {
+      method: 'DELETE',
+    }),
 
   /* Providers & Settings */
   listProviders: () => request<ProviderOut[]>('/providers'),
@@ -641,6 +656,27 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   getNetworkRestrictions: () => request<NetworkRestrictionsOut>('/settings/network'),
+  getModelRoutes: () => request<ModelRoutesOut>('/settings/model-routes'),
+  updateModelRoutes: (routes: Record<string, string>) =>
+    request<ModelRoutesOut>('/settings/model-routes', {
+      method: 'PUT',
+      body: JSON.stringify({ routes }),
+    }),
+  getLlmRetry: () => request<LlmRetryPolicyOut>('/settings/llm-retry'),
+  updateLlmRetry: (payload: LlmRetryPolicyOut) =>
+    request<LlmRetryPolicyOut>('/settings/llm-retry', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  listAudit: (params?: {
+    limit?: number
+    cursor?: string
+    action?: string
+    actor?: string
+    since?: string
+  }) => request<AuditPageOut>(`/audit${qs(params || {})}`),
+  getAuditExportUrl: (format: 'jsonl' | 'csv', params?: { action?: string; since?: string }) =>
+    `${API_BASE}/audit/export${qs({ format, ...params })}`,
   updateNoticeRule: (payload: {
     minSeverity: string
     notifyOnScanComplete: boolean

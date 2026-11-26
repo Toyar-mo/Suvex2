@@ -293,6 +293,7 @@ export const MODULE_THEMES: Record<string, ModuleVisualTheme> = {
   skills: { from: '#059669', to: '#1E3A8A', rim: 'rgba(167,243,208,0.55)', glow: 'rgba(5,150,105,0.32)', shader: 'ctf' },
   agents: { from: '#6366F1', to: '#0F172A', rim: 'rgba(199,210,254,0.55)', glow: 'rgba(99,102,241,0.34)', shader: 'indigo' },
   approvals: { from: '#F59E0B', to: '#1E3A8A', rim: 'rgba(253,230,138,0.55)', glow: 'rgba(245,158,11,0.30)', shader: 'studio' },
+  audit: { from: '#0F766E', to: '#1E293B', rim: 'rgba(153,246,228,0.55)', glow: 'rgba(15,118,110,0.30)', shader: 'ctf' },
   models: { from: '#06B6D4', to: '#312E81', rim: 'rgba(165,243,252,0.55)', glow: 'rgba(6,182,212,0.32)', shader: 'indigo' },
   settings: { from: '#64748B', to: '#1E293B', rim: 'rgba(226,232,240,0.50)', glow: 'rgba(100,116,139,0.28)', shader: 'studio' },
 }

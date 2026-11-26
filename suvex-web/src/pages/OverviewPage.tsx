@@ -221,7 +221,7 @@ function TokenTrendChart({
           <h2 className="text-sm font-semibold text-ink">模型 Token 用量趋势</h2>
         </div>
         <div className="flex items-center gap-1 rounded-lg border border-line bg-subtle p-0.5 text-[11px]">
-          {[7, 30].map((d) => (
+          {[7, 30, 90].map((d) => (
             <button
               key={d}
               type="button"

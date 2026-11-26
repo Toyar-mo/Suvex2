@@ -874,7 +874,17 @@ def write_llm_retry(
 ) -> LlmRetryOut:
     from app.providers import retry
 
-    policy = retry.RetryPolicy(**payload.model_dump())
+    policy = retry.RetryPolicy(
+        connect_retries=payload.connectRetries,
+        connect_interval_ms=payload.connectIntervalMs,
+        empty_retries=payload.emptyRetries,
+        empty_interval_ms=payload.emptyIntervalMs,
+        stream_retries=payload.streamRetries,
+        stream_interval_ms=payload.streamIntervalMs,
+        breaker_failures=payload.breakerFailures,
+        breaker_interval_ms=payload.breakerIntervalMs,
+        breaker_cooldown_s=payload.breakerCooldownS,
+    )
     retry.validate_policy(policy)
     saved = retry.save_policy(db, policy)
     return LlmRetryOut.model_validate(saved, from_attributes=True)

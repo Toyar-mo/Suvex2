@@ -15,6 +15,7 @@ import {
   Network,
   Radar,
   ScanSearch,
+  ScrollText,
   Settings2,
   ShieldAlert,
   Siren,
@@ -212,6 +213,15 @@ export const NAV_ITEMS: NavItem[] = [
     shortLabel: '审批',
     icon: ClipboardCheck,
     blurb: '跨会话审计工具调用的待批、批准与拒绝留痕，支持集中快捷处置。',
+  },
+  {
+    id: 'audit',
+    path: '/audit',
+    group: 'config',
+    label: '审计日志',
+    shortLabel: '审计',
+    icon: ScrollText,
+    blurb: '只追加安全操作留痕：扫描、Flag 提交、策略修改与合规取证导出。',
   },
   {
     id: 'models',

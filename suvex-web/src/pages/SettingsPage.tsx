@@ -7,11 +7,13 @@ import {
   Clock,
   Copy,
   Cpu,
+  GitBranch,
   Key,
   Layers,
   Lock,
   Plus,
   RefreshCw,
+  RotateCcw,
   Save,
   Send,
   Server,
@@ -27,9 +29,11 @@ import type {
   ApiTokenOut,
   DeepCheckOut,
   FindingSlaOut,
+  LlmRetryPolicyOut,
   NetworkRestrictionsOut,
   NoticeRuleOut,
   NotifyChannelOut,
+  ProviderOut,
   SandboxOut,
   ScanRetentionOut,
   Severity,
@@ -55,7 +59,14 @@ const QUICK_MODULES: Array<{ label: string; to: string }> = [
   { label: '技能库编辑器', to: '/skills' },
   { label: 'Agent 角色', to: '/agents' },
   { label: '审批审计日志', to: '/approvals' },
+  { label: '操作审计日志', to: '/audit' },
   { label: '内网立足点台账', to: '/intranet' },
+]
+
+const ROUTE_GOALS: Array<{ key: string; label: string; desc: string }> = [
+  { key: 'findVulns', label: '漏洞发现 (findVulns)', desc: '常规渗透测试与漏洞挖掘任务' },
+  { key: 'captureFlag', label: 'CTF 夺旗 (captureFlag)', desc: '自动解题、逆向分析与 Flag 获取' },
+  { key: 'verifyFix', label: '修复复测 (verifyFix)', desc: '针对已修复漏洞的复测验证扫描' },
 ]
 
 function isCheckHealthy(check: DeepCheckOut): boolean {
@@ -90,10 +101,17 @@ export function SettingsPage() {
   const { refresh: refreshAuth } = useAuth()
 
   const [sandbox, setSandbox] = useState<SandboxOut | null>(null)
+  const [providers, setProviders] = useState<ProviderOut[]>([])
   const [tokens, setTokens] = useState<ApiTokenOut[]>([])
   const [checks, setChecks] = useState<DeepCheckOut[]>([])
   const [checking, setChecking] = useState(false)
   const [network, setNetwork] = useState<NetworkRestrictionsOut | null>(null)
+
+  // Model Routes & LLM Retry Policy
+  const [modelRoutes, setModelRoutes] = useState<Record<string, string>>({})
+  const [savingRoutes, setSavingRoutes] = useState(false)
+  const [retryPolicy, setRetryPolicy] = useState<LlmRetryPolicyOut | null>(null)
+  const [savingRetry, setSavingRetry] = useState(false)
 
   // Editable sandbox form
   const [sbImage, setSbImage] = useState('')
@@ -162,14 +180,19 @@ export function SettingsPage() {
 
   const load = useCallback(async () => {
     try {
-      const [snap, ret, slaCfg, netCfg] = await Promise.all([
+      const [snap, ret, slaCfg, netCfg, routesRes, retryRes] = await Promise.all([
         api.getSettingsSnapshot(),
         api.getScanRetention().catch(() => null),
         api.getFindingSla().catch(() => null),
         api.getNetworkRestrictions().catch(() => null),
+        api.getModelRoutes().catch(() => ({ routes: {} })),
+        api.getLlmRetry().catch(() => null),
       ])
       syncSandboxForm(snap.sandbox)
+      setProviders(snap.accounts || [])
       setTokens(snap.tokens)
+      setModelRoutes(routesRes.routes || {})
+      if (retryRes) setRetryPolicy(retryRes)
       if (snap.notices) {
         setNoticeRule(snap.notices.rule)
         setChannels(snap.notices.channels)
@@ -351,6 +374,49 @@ export function SettingsPage() {
       push(err instanceof ApiClientError ? err.message : '保存 SLA 失败', 'error')
     } finally {
       setSavingSla(false)
+    }
+  }
+
+  const handleSaveModelRoutes = async (e: FormEvent) => {
+    e.preventDefault()
+    setSavingRoutes(true)
+    try {
+      const cleaned: Record<string, string> = {}
+      for (const [k, v] of Object.entries(modelRoutes)) {
+        if (v.trim()) cleaned[k] = v.trim()
+      }
+      const saved = await api.updateModelRoutes(cleaned)
+      setModelRoutes(saved.routes || {})
+      push('按目标模型路由已保存，新发起扫描将按此策略自动选模', 'success')
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '保存模型路由失败', 'error')
+    } finally {
+      setSavingRoutes(false)
+    }
+  }
+
+  const handleSaveLlmRetry = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!retryPolicy) return
+    setSavingRetry(true)
+    try {
+      const saved = await api.updateLlmRetry({
+        connectRetries: Math.max(0, Math.min(10, Number(retryPolicy.connectRetries) || 0)),
+        connectIntervalMs: Math.max(0, Math.min(30000, Number(retryPolicy.connectIntervalMs) || 0)),
+        emptyRetries: Math.max(0, Math.min(10, Number(retryPolicy.emptyRetries) || 0)),
+        emptyIntervalMs: Math.max(0, Math.min(30000, Number(retryPolicy.emptyIntervalMs) || 0)),
+        streamRetries: Math.max(0, Math.min(10, Number(retryPolicy.streamRetries) || 0)),
+        streamIntervalMs: Math.max(0, Math.min(30000, Number(retryPolicy.streamIntervalMs) || 0)),
+        breakerFailures: Math.max(1, Math.min(100, Number(retryPolicy.breakerFailures) || 1)),
+        breakerIntervalMs: Math.max(0, Math.min(30000, Number(retryPolicy.breakerIntervalMs) || 0)),
+        breakerCooldownS: Math.max(1, Math.min(3600, Number(retryPolicy.breakerCooldownS) || 1)),
+      })
+      setRetryPolicy(saved)
+      push('LLM 重试与熔断策略已保存并生效', 'success')
+    } catch (err) {
+      push(err instanceof ApiClientError ? err.message : '保存重试策略失败', 'error')
+    } finally {
+      setSavingRetry(false)
     }
   }
 
@@ -745,6 +811,179 @@ export function SettingsPage() {
                   </Button>
                 </div>
               </form>
+            )}
+          </Card>
+
+          {/* Model Routes by Goal */}
+          <Card className="p-5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <GitBranch className="h-4 w-4 text-accent" />
+                <h2 className="text-sm font-semibold text-ink">按扫描目标模型路由</h2>
+              </div>
+              <Link to="/models" className="text-xs text-accent hover:underline">
+                管理模型通道 →
+              </Link>
+            </div>
+            <p className="mt-1 text-xs text-ink-secondary">
+              为不同评估目标指定专用模型通道；未指定时自动回退至平台默认模型。
+            </p>
+            <form onSubmit={handleSaveModelRoutes} className="mt-4 space-y-3 text-xs">
+              {ROUTE_GOALS.map((g) => (
+                <div
+                  key={g.key}
+                  className="flex flex-col gap-1.5 rounded-lg border border-line bg-subtle/50 p-3 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div className="min-w-0">
+                    <p className="font-medium text-ink">{g.label}</p>
+                    <p className="text-[11px] text-ink-muted">{g.desc}</p>
+                  </div>
+                  <Select
+                    className="sm:w-56"
+                    value={modelRoutes[g.key] || ''}
+                    onChange={(v) => setModelRoutes((prev) => ({ ...prev, [g.key]: v }))}
+                    options={[
+                      { value: '', label: '跟随平台默认模型' },
+                      ...providers.map((p) => ({
+                        value: p.id,
+                        label: `${p.label} (${p.model})`,
+                      })),
+                    ]}
+                  />
+                </div>
+              ))}
+              <div className="flex justify-end pt-1">
+                <Button type="submit" size="sm" variant="secondary" loading={savingRoutes}>
+                  <Save className="h-3.5 w-3.5" />
+                  保存模型路由
+                </Button>
+              </div>
+            </form>
+          </Card>
+
+          {/* LLM Retry & Circuit Breaker */}
+          <Card className="p-5">
+            <div className="flex items-center gap-2">
+              <RotateCcw className="h-4 w-4 text-accent" />
+              <h2 className="text-sm font-semibold text-ink">LLM 重试与熔断策略</h2>
+            </div>
+            <p className="mt-1 text-xs text-ink-secondary">
+              控制建连异常（429/5xx）、空响应与流中断的分层重试次数与退避间隔，以及连续失败熔断冷却时长。
+            </p>
+            {retryPolicy ? (
+              <form onSubmit={handleSaveLlmRetry} className="mt-4 space-y-3 text-xs">
+                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+                  <div>
+                    <label className="mb-1 block text-[11px] text-ink-muted">建连重试次数 (0-10)</label>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={10}
+                      value={retryPolicy.connectRetries}
+                      onChange={(e) =>
+                        setRetryPolicy({ ...retryPolicy, connectRetries: Number(e.target.value) })
+                      }
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] text-ink-muted">建连退避基准 (ms)</label>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={30000}
+                      step={100}
+                      value={retryPolicy.connectIntervalMs}
+                      onChange={(e) =>
+                        setRetryPolicy({ ...retryPolicy, connectIntervalMs: Number(e.target.value) })
+                      }
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] text-ink-muted">空响应重试 (0-10)</label>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={10}
+                      value={retryPolicy.emptyRetries}
+                      onChange={(e) =>
+                        setRetryPolicy({ ...retryPolicy, emptyRetries: Number(e.target.value) })
+                      }
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] text-ink-muted">空响应间隔 (ms)</label>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={30000}
+                      step={100}
+                      value={retryPolicy.emptyIntervalMs}
+                      onChange={(e) =>
+                        setRetryPolicy({ ...retryPolicy, emptyIntervalMs: Number(e.target.value) })
+                      }
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] text-ink-muted">流中断重试 (0-10)</label>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={10}
+                      value={retryPolicy.streamRetries}
+                      onChange={(e) =>
+                        setRetryPolicy({ ...retryPolicy, streamRetries: Number(e.target.value) })
+                      }
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] text-ink-muted">流中断间隔 (ms)</label>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={30000}
+                      step={100}
+                      value={retryPolicy.streamIntervalMs}
+                      onChange={(e) =>
+                        setRetryPolicy({ ...retryPolicy, streamIntervalMs: Number(e.target.value) })
+                      }
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2.5 rounded-lg border border-line bg-subtle/50 p-3">
+                  <div>
+                    <label className="mb-1 block text-[11px] text-ink-muted">连续失败熔断阈值 (1-100)</label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={100}
+                      value={retryPolicy.breakerFailures}
+                      onChange={(e) =>
+                        setRetryPolicy({ ...retryPolicy, breakerFailures: Number(e.target.value) })
+                      }
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] text-ink-muted">熔断冷却时间 (秒, 1-3600)</label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={3600}
+                      value={retryPolicy.breakerCooldownS}
+                      onChange={(e) =>
+                        setRetryPolicy({ ...retryPolicy, breakerCooldownS: Number(e.target.value) })
+                      }
+                    />
+                  </div>
+                </div>
+                <div className="flex justify-end pt-1">
+                  <Button type="submit" size="sm" variant="secondary" loading={savingRetry}>
+                    <Save className="h-3.5 w-3.5" />
+                    保存重试策略
+                  </Button>
+                </div>
+              </form>
+            ) : (
+              <p className="mt-3 text-xs text-ink-muted">正在加载重试策略…</p>
             )}
           </Card>
 

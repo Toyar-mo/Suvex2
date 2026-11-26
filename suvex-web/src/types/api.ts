@@ -37,10 +37,11 @@ export interface HealthOut {
 }
 
 export interface SandboxHealthOut {
-  engine: string
-  ready: boolean
-  detail?: string | null
+  status: string
   image?: string | null
+  engine?: string
+  ready?: boolean
+  detail?: string | null
 }
 
 export interface DeepCheckOut {
@@ -510,6 +511,28 @@ export interface KernelUsageSummary {
   totalTokens: number
 }
 
+export type SubmitMode = 'safe' | 'auto'
+
+export interface KernelSettingsOut {
+  submitMode: SubmitMode
+  maxWrongSubmissions: number
+  defaultSandboxProfile: string
+  maxConcurrentSolves: number
+  solvePollSeconds: number
+  autoSyncSeconds: number
+  autoPriorityNew: boolean
+  autoStartNew: boolean
+  maxTurns: number
+  wallClockSeconds: number | null
+  fallbackProviderId: string | null
+  enableAgentsecScenarios: boolean
+  enableIrScenarios: boolean
+  enableMultiAgent: boolean
+  updatedAt: string
+}
+
+export type KernelSettingsIn = Omit<KernelSettingsOut, 'updatedAt'>
+
 /* Providers & Settings */
 export interface ProviderOut {
   id: string
@@ -620,6 +643,44 @@ export interface NetworkRestrictionsOut {
   allowedCidrs: string[]
   builtinHosts: string[]
   builtinCidrs: string[]
+}
+
+export interface ModelRoutesOut {
+  routes: Record<string, string>
+}
+
+export interface LlmRetryPolicyOut {
+  connectRetries: number
+  connectIntervalMs: number
+  emptyRetries: number
+  emptyIntervalMs: number
+  streamRetries: number
+  streamIntervalMs: number
+  breakerFailures: number
+  breakerIntervalMs: number
+  breakerCooldownS: number
+}
+
+export interface AuditEntryOut {
+  id: string
+  at: string
+  action: string
+  actionLabel: string
+  actorKind: string
+  actorLabel: string
+  actorId: string | null
+  target: string | null
+  summary: string
+  ip: string | null
+  userAgent: string | null
+  detail: Record<string, unknown> | null
+}
+
+export interface AuditPageOut {
+  entries: AuditEntryOut[]
+  nextCursor: string | null
+  total: number
+  retentionDays: number
 }
 
 export interface SettingsSnapshotOut {
